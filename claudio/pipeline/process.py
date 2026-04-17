@@ -35,6 +35,7 @@ def process(
     filename: str = "",
     constraints: list[str] | None = None,
     output_format: str | None = None,
+    allow_context_request: bool = False,
 ) -> PipelineResult:
     """Run the full processing pipeline on raw input.
 
@@ -72,6 +73,7 @@ def process(
         constraints=constraints,
         output_format=output_format,
         intent=intent,
+        allow_context_request=allow_context_request,
     )
 
     final_tokens = estimate_tokens(prompt, is_code=False)

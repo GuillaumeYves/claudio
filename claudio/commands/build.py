@@ -10,7 +10,7 @@ Usage:
 """
 
 from claudio.pipeline.process import process
-from claudio.commands.run_prompt import execute_with_tracking
+from claudio.commands.run_prompt import execute_with_tracking, parse_need_context
 from claudio.utils.args import (
     parse_command_args,
     resolve_file_attachments,
@@ -78,15 +78,50 @@ def execute(raw_args: list[str], ctx: dict) -> int:
 
     config = MODE_CONFIG[parsed.mode]
     task = f"{config['task_prefix']}: {parsed.prompt}" if parsed.prompt else config["task_prefix"]
-    file_context = format_file_context(parsed.files)
+
+    allow_feedback = bool(ctx.get("feedback") and parsed.files)
+
+    response = _process_and_execute(
+        files=parsed.files,
+        task=task,
+        mode=parsed.mode,
+        config=config,
+        ctx=ctx,
+        out=out,
+        allow_feedback=allow_feedback,
+    )
+
+    if allow_feedback and response:
+        need = parse_need_context(response)
+        if need:
+            path, lines, reason = need
+            if _expand_file_range(parsed.files, path, lines):
+                out.info(f"[claudio] Claude requested more context: {path} lines {lines}"
+                         f"{' — ' + reason if reason else ''}. Retrying.")
+                _process_and_execute(
+                    files=parsed.files,
+                    task=task,
+                    mode=parsed.mode,
+                    config=config,
+                    ctx={**ctx, "no_cache": True},
+                    out=out,
+                    allow_feedback=False,
+                )
+
+    return 0
+
+
+def _process_and_execute(files, task, mode, config, ctx, out, allow_feedback):
+    file_context = format_file_context(files)
 
     result = process(
         raw_input=file_context,
         task=task,
         intent=config["intent"],
-        filename=parsed.files[0].path if parsed.files else "",
+        filename=files[0].path if files else "",
         constraints=config["constraints"],
         output_format=config["output_format"],
+        allow_context_request=allow_feedback,
     )
 
     if ctx["verbose"]:
@@ -94,12 +129,24 @@ def execute(raw_args: list[str], ctx: dict) -> int:
         if result.tokens_saved > 0:
             out.info(f"Saved ~{result.tokens_saved:,} tokens via compression")
 
-    execute_with_tracking(
+    return execute_with_tracking(
         prompt=result.prompt,
         ctx=ctx,
         out=out,
         cmd="build",
-        mode=parsed.mode,
+        mode=mode,
+        intent=config["intent"],
         metadata=result.metadata,
     )
-    return 0
+
+
+def _expand_file_range(files, requested_path: str, requested_lines: str) -> bool:
+    from claudio.utils.args import resolve_file_attachments
+
+    for fa in files:
+        if fa.path == requested_path or fa.path.endswith(requested_path):
+            fa.lines = requested_lines
+            fa.content = ""
+            resolve_file_attachments([fa])
+            return bool(fa.content)
+    return False

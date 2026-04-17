@@ -25,8 +25,26 @@ def find_claude_cli() -> str | None:
     return None
 
 
-def execute_prompt(prompt: str, json_output: bool = False) -> str:
-    """Send a prompt to Claude CLI and return the response."""
+def execute_prompt(
+    prompt: str,
+    json_output: bool = False,
+    model: str | None = None,
+    session_id: str | None = None,
+    resume: str | None = None,
+    allowed_tools: list[str] | None = None,
+) -> str:
+    """Send a prompt to Claude CLI and return the response.
+
+    Args:
+        prompt: The optimized prompt to send.
+        json_output: If True, request JSON output from Claude.
+        model: Model alias (haiku/sonnet/opus) or full ID. Passed via --model.
+        session_id: Fixed session ID (UUID). Passed via --session-id.
+        resume: Existing session ID to resume. Passed via --resume. Mutually
+            exclusive with session_id at the CLI level.
+        allowed_tools: List of tool names to allow (e.g. ["Read", "Grep", "Glob"]).
+            Passed via --allowedTools. Empty/None means no tools (single-shot).
+    """
     claude_bin = find_claude_cli()
     if not claude_bin:
         print(
@@ -39,6 +57,14 @@ def execute_prompt(prompt: str, json_output: bool = False) -> str:
     cmd = [claude_bin, "--print"]
     if json_output:
         cmd.extend(["--output-format", "json"])
+    if model:
+        cmd.extend(["--model", model])
+    if resume:
+        cmd.extend(["--resume", resume])
+    elif session_id:
+        cmd.extend(["--session-id", session_id])
+    if allowed_tools:
+        cmd.extend(["--allowedTools", ",".join(allowed_tools)])
 
     config = load_config()
     timeout = config.get("timeout", 300)

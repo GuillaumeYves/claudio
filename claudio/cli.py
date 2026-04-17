@@ -39,6 +39,11 @@ Global flags:
     --no-cache          Bypass response cache for this request
     --verbose           Show token estimates and pipeline details
     --json              Output in JSON format
+    --model NAME        Override model (haiku|sonnet|opus or full ID)
+    --session-id UUID   Start a session with a fixed ID (reusable via --resume)
+    --resume UUID       Resume an existing Claude session (warm prompt cache)
+    --feedback          Let Claude request missing context (auto-retry once)
+    --agentic           (cld run only) Execute the plan in one agentic session
     --completions SHELL Output shell completion script (bash/zsh/powershell)
     -v, --version       Show version
     -h, --help          Show this help
@@ -50,17 +55,29 @@ Argument order is enforced:
 """
 
 
-def _pop_global_flags(argv: list[str]) -> dict:
+# Flags that take a value (the next argv is the value, not a positional arg).
+_VALUE_FLAGS = {"--model", "--session-id", "--resume"}
+
+
+def _pop_global_flags(argv: list[str]) -> tuple[list[str], dict]:
     """Extract global flags from argv, return (remaining, flags dict)."""
     flags = {
         "dry_run": False,
         "no_cache": False,
         "verbose": False,
         "json_output": False,
+        "model": None,
+        "session_id": None,
+        "resume": None,
+        "feedback": False,
+        "agentic": False,
     }
-    remaining = []
+    remaining: list[str] = []
 
-    for arg in argv:
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+
         if arg == "--dry-run":
             flags["dry_run"] = True
         elif arg == "--no-cache":
@@ -69,8 +86,26 @@ def _pop_global_flags(argv: list[str]) -> dict:
             flags["verbose"] = True
         elif arg == "--json":
             flags["json_output"] = True
+        elif arg == "--feedback":
+            flags["feedback"] = True
+        elif arg == "--agentic":
+            flags["agentic"] = True
+        elif arg in _VALUE_FLAGS:
+            if i + 1 >= len(argv):
+                print(f"[claudio:error] {arg} requires a value", file=sys.stderr)
+                sys.exit(2)
+            value = argv[i + 1]
+            if arg == "--model":
+                flags["model"] = value
+            elif arg == "--session-id":
+                flags["session_id"] = value
+            elif arg == "--resume":
+                flags["resume"] = value
+            i += 2
+            continue
         else:
             remaining.append(arg)
+        i += 1
 
     return remaining, flags
 

@@ -150,9 +150,21 @@ cld run @src/config.py @docs/api-spec.md
 
 # Preview all prompts without executing
 cld run --dry-run
+
+# Run as a single agentic session with tool access (Read/Grep/Glob)
+cld run --agentic
 ```
 
 `cld run` always reads from `claudio-task.json` in the current directory. It validates the file, warns about missing fields, and asks for confirmation before executing.
+
+**Execution modes:**
+
+| Mode | How it runs | When to use |
+|------|-------------|-------------|
+| serial (default) | One `claude --print` per task | Tasks are independent; you want clean per-task output |
+| `--agentic` | One session for the whole plan, with `Read`/`Grep`/`Glob` tools | Tasks share reasoning, or Claude should discover files itself |
+
+Agentic mode saves tokens on multi-task plans (no per-task prompt re-ingest) and lets Claude carry insight from task 1 into task 2.
 
 **Task file format:**
 
@@ -370,8 +382,13 @@ cld run --json
 |------|-------------|
 | `--dry-run` | Print the optimized prompt without calling Claude |
 | `--no-cache` | Bypass response cache for this request |
-| `--verbose` | Show token count, compression ratio, and metadata |
+| `--verbose` | Show token count, compression ratio, model, and metadata |
 | `--json` | Output results as structured JSON |
+| `--model NAME` | Override model (`haiku` / `sonnet` / `opus` or full ID) |
+| `--session-id UUID` | Start a session with a fixed ID (reusable via `--resume`) |
+| `--resume UUID` | Resume an existing Claude session (warm prompt cache) |
+| `--feedback` | Let Claude request missing context; auto-retry once with expanded range |
+| `--agentic` | (`cld run` only) Execute the plan in one agentic session with tool access |
 | `-v`, `--version` | Print version |
 | `-h`, `--help` | Show help |
 
@@ -412,35 +429,95 @@ Reduces large inputs to structured summaries:
 - **Code < 50 lines**: imports collapsed into a one-line summary, code preserved.
 - **Logs > 150 lines**: errors + warnings (capped) + info count + last 15 lines for recency.
 
-### 3. Prompt (XML-tagged, zero duplication)
+### 3. Prompt (XML-tagged, cache-aligned, zero duplication)
 
-Builds a minimal prompt using XML tags instead of markdown:
+Builds a minimal prompt using XML tags instead of markdown, with the **stable sections first and the variable `<task>` last**:
 
 ```xml
-<task>Refactor: extract validation logic</task>
-<context>
-<file path="auth.py" lines="40-80">
-def validate_token(token):
-    ...
-</file>
-</context>
 <rules>
 - Preserve behavior
 - Output unified diff
 - One-line reason per change
 </rules>
 <format>diff with explanation</format>
+<context>
+<file path="auth.py" lines="40-80">
+def validate_token(token):
+    ...
+</file>
+</context>
+<task>Refactor: extract validation logic</task>
 ```
+
+**Why this order?** Anthropic's prompt cache keys on the prefix. Rules, format, and file context rarely change between two back-to-back calls on the same file; only the `<task>` really varies. Putting the task last means a follow-up call can hit the 5-minute prompt cache instead of paying full ingest cost. Combine with `--session-id` / `--resume` for iterative workflows.
 
 **Why XML over markdown?** Claude parses XML tags natively (it's the same format used for tool use). XML tags cost ~2 tokens each vs ~4-6 for `## Header` + newlines. Across a session of 50 requests, this saves ~200 tokens of pure formatting overhead.
 
-**Zero duplication:** The user's description appears exactly once in `<task>`. File contents appear exactly once in `<context>`. Previous versions sent the description in both places.
+**Zero duplication:** The user's description appears exactly once in `<task>`. File contents appear exactly once in `<context>`.
 
 **No default padding:** Question-mode (`cld ask -question`) produces just `<task>your question</task>` -- no constraints, no format instructions, no boilerplate. Claude doesn't need to be told "be concise" on a simple question.
 
 ### 4. Execute
 
 Sends to Claude CLI via `claude --print`. In `--dry-run` mode, prints the prompt instead.
+
+Flags plumbed to the Claude CLI when set:
+
+- `--model` → `claude --model` (auto-routed by intent + input size if unset; see below)
+- `--session-id` / `--resume` → session continuity across calls (warm prompt cache)
+- `--agentic` (cld run) → adds `--allowedTools Read,Grep,Glob` for agentic execution
+
+---
+
+## Model Routing
+
+When `--model` is not set, Claudio picks the cheapest model that fits the task:
+
+| Intent | Input size | Model |
+|--------|------------|-------|
+| question / general | < 2k tokens | `haiku` |
+| review / refactor / debug | > 8k tokens | `opus` |
+| any | > 20k tokens | `opus` |
+| everything else | — | `sonnet` |
+
+Override with `--model haiku|sonnet|opus` (or a full model ID) on any command. `--verbose` prints the resolved model.
+
+---
+
+## Feedback Channel (`--feedback`)
+
+Claudio's compressor trades raw code for a structural map above 50 lines. That's usually enough — but sometimes Claude genuinely needs specific lines back.
+
+`--feedback` opens a two-way channel: the prompt tells Claude to respond with only
+
+```
+<need-context file="PATH" lines="START-END" reason="..."/>
+```
+
+when the compressed context is insufficient. Claudio parses that signal, expands the requested file range, and re-runs the prompt once with the richer context (no loops — max one retry per call).
+
+```bash
+cld ask -review --feedback @src/auth.py "is the token flow correct?"
+# -> Claude replies: <need-context file="auth.py" lines="120-180" reason="need validate_refresh body"/>
+# -> Claudio re-runs with those lines included
+```
+
+Useful for large files where you don't know upfront which lines matter. No effect when no `@file` is attached.
+
+---
+
+## Sessions (`--session-id` / `--resume`)
+
+For iterative work, reuse a Claude session so the prompt cache stays warm and context carries across calls:
+
+```bash
+ID=$(uuidgen)
+cld ask -question --session-id $ID @src/pipeline.py "walk me through this"
+cld ask -question --resume $ID "now explain the compression stage"
+cld ask -question --resume $ID "why XML over JSON in the prompt?"
+```
+
+`--resume` bypasses the local response cache (the point is to get a fresh Claude turn, not a stored echo).
 
 ---
 

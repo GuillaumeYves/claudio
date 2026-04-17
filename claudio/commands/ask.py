@@ -12,7 +12,7 @@ Usage:
 """
 
 from claudio.pipeline.process import process
-from claudio.commands.run_prompt import execute_with_tracking
+from claudio.commands.run_prompt import execute_with_tracking, parse_need_context
 from claudio.utils.args import (
     parse_command_args,
     resolve_file_attachments,
@@ -93,15 +93,52 @@ def execute(raw_args: list[str], ctx: dict) -> int:
     else:
         task = parsed.prompt
 
-    file_context = format_file_context(parsed.files)
+    # Feedback channel: only meaningful when files are attached (context may
+    # have been compressed). Opt-in via --feedback.
+    allow_feedback = bool(ctx.get("feedback") and parsed.files)
+
+    response = _process_and_execute(
+        files=parsed.files,
+        task=task,
+        config=config,
+        ctx=ctx,
+        out=out,
+        allow_feedback=allow_feedback,
+    )
+
+    # Auto-retry on <need-context>: expand the requested file range and re-run
+    # once with the richer context (no second retry to avoid loops).
+    if allow_feedback and response:
+        need = parse_need_context(response)
+        if need:
+            path, lines, reason = need
+            if _expand_file_range(parsed.files, path, lines):
+                out.info(f"[claudio] Claude requested more context: {path} lines {lines}"
+                         f"{' — ' + reason if reason else ''}. Retrying.")
+                _process_and_execute(
+                    files=parsed.files,
+                    task=task,
+                    config=config,
+                    ctx={**ctx, "no_cache": True},
+                    out=out,
+                    allow_feedback=False,
+                )
+
+    return 0
+
+
+def _process_and_execute(files, task, config, ctx, out, allow_feedback):
+    """Single process+execute pass. Extracted so retry can call it again."""
+    file_context = format_file_context(files)
 
     result = process(
         raw_input=file_context,
         task=task,
         intent=config["intent"],
-        filename=parsed.files[0].path if parsed.files else "",
+        filename=files[0].path if files else "",
         constraints=config["constraints"],
         output_format=config["output_format"],
+        allow_context_request=allow_feedback,
     )
 
     if ctx["verbose"]:
@@ -109,12 +146,36 @@ def execute(raw_args: list[str], ctx: dict) -> int:
         if result.tokens_saved > 0:
             out.info(f"Saved ~{result.tokens_saved:,} tokens via compression")
 
-    execute_with_tracking(
+    return execute_with_tracking(
         prompt=result.prompt,
         ctx=ctx,
         out=out,
         cmd="ask",
-        mode=parsed.mode,
+        mode=_mode_for(config),
+        intent=config["intent"],
         metadata=result.metadata,
     )
-    return 0
+
+
+def _mode_for(config: dict) -> str:
+    """Map MODE_CONFIG entry back to the short mode name used for stats."""
+    for short, full in ASK_MODES.items():
+        if short == full and MODE_CONFIG[full] is config:
+            return full
+    return config.get("intent", "question")
+
+
+def _expand_file_range(files, requested_path: str, requested_lines: str) -> bool:
+    """Find the matching FileAttachment and expand its line range.
+
+    Returns True if the attachment was found and re-read.
+    """
+    from claudio.utils.args import resolve_file_attachments
+
+    for fa in files:
+        if fa.path == requested_path or fa.path.endswith(requested_path):
+            fa.lines = requested_lines
+            fa.content = ""  # force re-read
+            resolve_file_attachments([fa])
+            return bool(fa.content)
+    return False

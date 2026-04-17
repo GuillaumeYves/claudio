@@ -4,9 +4,19 @@ Always reads claudio-task.json from the current workspace.
 Validates required fields and warns about missing ones.
 Prompts for confirmation before executing.
 
+Two execution modes:
+    serial (default)  -- one `claude --print` call per task. Simple, isolated,
+                         but each task restarts cold (no shared reasoning,
+                         no cache reuse between tasks).
+    agentic (--agentic) -- one `claude --print` call with Read/Grep/Glob tools.
+                         Claude drives the whole plan in a single session, can
+                         follow references between tasks, and can pull files
+                         it decides it needs mid-flight.
+
 Usage:
     cld run
     cld run @extra-context.py @config.yaml
+    cld run --agentic           # single agentic session with tool access
 """
 
 import json
@@ -14,6 +24,8 @@ import sys
 from pathlib import Path
 
 from claudio.pipeline.process import process
+from claudio.pipeline.prompt import build_prompt
+from claudio.commands.run_prompt import execute_with_tracking
 from claudio.executor import execute_prompt
 from claudio.cache import cache_get, cache_put
 from claudio.usage import log_request
@@ -31,6 +43,11 @@ TASK_FILE = "claudio-task.json"
 REQUIRED_FIELDS = {"name", "tasks"}
 REQUIRED_TASK_FIELDS = {"name", "prompt"}
 OPTIONAL_TASK_FIELDS = {"context", "intent", "constraints", "output_format"}
+
+# Tools offered to Claude in agentic mode. Read-only by default — users can
+# widen this via config if they want Edit/Write, but we don't enable file
+# mutation from a plan runner without an explicit opt-in.
+AGENTIC_ALLOWED_TOOLS = ["Read", "Grep", "Glob"]
 
 
 def execute(raw_args: list[str], ctx: dict) -> int:
@@ -96,7 +113,8 @@ def execute(raw_args: list[str], ctx: dict) -> int:
 
     # Show plan summary and confirm
     plan_name = plan.get("name", TASK_FILE)
-    out.info(f"Plan: {plan_name} ({len(tasks)} tasks)")
+    mode_label = "agentic" if ctx.get("agentic") else "serial"
+    out.info(f"Plan: {plan_name} ({len(tasks)} tasks, {mode_label})")
     for i, task in enumerate(tasks, 1):
         out.info(f"  [{i}] {task.get('name', f'Task {i}')}")
 
@@ -110,7 +128,13 @@ def execute(raw_args: list[str], ctx: dict) -> int:
             print()
             return 130
 
-    # Execute tasks sequentially
+    if ctx.get("agentic"):
+        return _run_agentic(plan, tasks, extra_context, ctx, out)
+    return _run_serial(tasks, extra_context, ctx, out)
+
+
+def _run_serial(tasks: list[dict], extra_context: str, ctx: dict, out: Output) -> int:
+    """Original per-task execution: one `claude --print` per task."""
     results = []
     for i, task in enumerate(tasks, 1):
         task_name = task.get("name", f"Task {i}")
@@ -141,27 +165,24 @@ def execute(raw_args: list[str], ctx: dict) -> int:
             results.append({"task": task_name, "prompt": result.prompt})
             continue
 
-        # Cache check
-        cached = None
-        if not ctx.get("no_cache"):
-            cached = cache_get(result.prompt)
+        # Delegate to the shared executor so run shares cache + model routing
+        # with ask/build. We suppress inline result printing here and format
+        # the plan output ourselves below.
+        response = execute_with_tracking(
+            prompt=result.prompt,
+            ctx={**ctx, "json_output": ctx["json_output"]},
+            out=_SilentOutput(out),
+            cmd="run",
+            mode=task_intent,
+            intent=task_intent,
+            metadata=result.metadata,
+        )
 
-        if cached is not None:
-            out.info(f"  [cache hit]")
-            response = cached
-            log_request("run", task_intent, estimate_tokens(result.prompt), cached=True)
-        else:
-            response = execute_prompt(result.prompt, json_output=ctx["json_output"])
-            if not ctx.get("no_cache"):
-                cache_put(result.prompt, response, estimate_tokens(result.prompt))
-            log_request("run", task_intent, estimate_tokens(result.prompt),
-                        output_tokens=estimate_tokens(response), cached=False)
-
-        results.append({"task": task_name, "response": response})
+        results.append({"task": task_name, "response": response or ""})
 
         if not ctx["json_output"]:
             print(f"\n--- {task_name} ---")
-            print(response)
+            print(response or "")
             print()
 
     if ctx["dry_run"]:
@@ -174,6 +195,121 @@ def execute(raw_args: list[str], ctx: dict) -> int:
         out.result(json.dumps(results, indent=2))
 
     return 0
+
+
+def _run_agentic(plan: dict, tasks: list[dict], extra_context: str, ctx: dict, out: Output) -> int:
+    """Single agentic session: build one prompt, let Claude use tools across all tasks.
+
+    Why: serial mode pays a full prompt-ingest cost per task and forbids
+    Claude from carrying insight from task 1 into task 2. Agentic mode sends
+    the whole plan once with Read/Grep/Glob access, so shared reasoning,
+    file discovery, and cross-task consistency all become possible.
+    """
+    plan_name = plan.get("name", "Plan")
+    prompt = _build_agentic_prompt(plan_name, tasks, extra_context)
+
+    if ctx["dry_run"]:
+        out.result(prompt)
+        return 0
+
+    if ctx["verbose"]:
+        tokens = estimate_tokens(prompt)
+        out.info(format_token_info(tokens))
+        out.info(f"[claudio] agentic tools: {', '.join(AGENTIC_ALLOWED_TOOLS)}")
+
+    # Pick the heaviest intent in the plan for model routing — if any task
+    # is a review/refactor, the whole session deserves the stronger model.
+    intent = _plan_intent(tasks)
+
+    response = execute_with_tracking(
+        prompt=prompt,
+        ctx=ctx,
+        out=out,
+        cmd="run",
+        mode="agentic",
+        intent=intent,
+        allowed_tools=AGENTIC_ALLOWED_TOOLS,
+    )
+
+    return 0 if response is not None else 1
+
+
+def _build_agentic_prompt(plan_name: str, tasks: list[dict], extra_context: str) -> str:
+    """Assemble the single prompt sent in agentic mode.
+
+    Structure mirrors prompt.py's cache-aligned order: rules first, variable
+    task list last.
+    """
+    parts = [
+        "<rules>",
+        "- Execute each <task> in order",
+        "- Use Read/Grep/Glob to pull in any files referenced in task contexts",
+        "- Share findings across tasks when relevant (don't re-derive)",
+        "- Output each task's result under a `### <task name>` heading",
+        "</rules>",
+    ]
+
+    if extra_context:
+        parts.append(f"<context>\n{extra_context}\n</context>")
+
+    task_blocks = [f'<plan name="{_xml_escape(plan_name)}">']
+    for i, t in enumerate(tasks, 1):
+        name = _xml_escape(t.get("name", f"Task {i}"))
+        intent = t.get("intent", "general")
+        task_blocks.append(f'  <task name="{name}" intent="{intent}">')
+        task_blocks.append(f'    <prompt>{_xml_escape(t.get("prompt", ""))}</prompt>')
+        if t.get("context"):
+            task_blocks.append(f'    <hint>{_xml_escape(t["context"])}</hint>')
+        if t.get("constraints"):
+            rules = "\n".join(f"- {_xml_escape(c)}" for c in t["constraints"])
+            task_blocks.append(f'    <constraints>\n{rules}\n    </constraints>')
+        if t.get("output_format"):
+            task_blocks.append(f'    <format>{_xml_escape(t["output_format"])}</format>')
+        task_blocks.append("  </task>")
+    task_blocks.append("</plan>")
+
+    parts.append("\n".join(task_blocks))
+    return "\n".join(parts)
+
+
+def _plan_intent(tasks: list[dict]) -> str:
+    """Pick the most demanding intent across tasks — drives model routing."""
+    priority = ["refactor", "review", "debug", "generate", "general"]
+    intents = {t.get("intent", "general") for t in tasks}
+    for p in priority:
+        if p in intents:
+            return p
+    return "general"
+
+
+def _xml_escape(s: str) -> str:
+    return (s.replace("&", "&amp;")
+             .replace("<", "&lt;")
+             .replace(">", "&gt;")
+             .replace('"', "&quot;"))
+
+
+class _SilentOutput:
+    """Wraps an Output so execute_with_tracking doesn't double-print results.
+
+    run.py formats each task's response itself for the dashed section headers,
+    so we need the shared executor to stay quiet on `out.result`.
+    """
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def info(self, *a, **kw):
+        self._inner.info(*a, **kw)
+
+    def warn(self, *a, **kw):
+        self._inner.warn(*a, **kw)
+
+    def error(self, *a, **kw):
+        self._inner.error(*a, **kw)
+
+    def result(self, *a, **kw):
+        pass
 
 
 def _validate_plan(plan: dict) -> list[str]:

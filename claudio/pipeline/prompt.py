@@ -8,6 +8,10 @@ Design principles:
      No generic "be concise" padding.
   4. Context is pre-compressed -- the prompt builder trusts the pipeline
      already stripped noise. No re-explaining what was removed.
+  5. Cache-aligned order -- stable sections (rules, format, intent, context)
+     come first, variable <task> is last. The Anthropic prompt cache keys on
+     the prefix, so a stable prefix keeps warm caches across calls that share
+     the same file context and mode.
 """
 
 
@@ -17,29 +21,21 @@ def build_prompt(
     constraints: list[str] | None = None,
     output_format: str | None = None,
     intent: str = "general",
+    allow_context_request: bool = False,
 ) -> str:
     """Build a minimal structured prompt using XML tags.
 
-    Token savings vs markdown format:
-      - XML tags: ~2 tokens each vs ~4-6 for ## Header + newline
-      - No approach section when constraints exist (was always redundant)
-      - No default output_format boilerplate for general intent
+    Order (cache-friendly):
+      <rules> <format> <intent> <context-protocol> <context> <task>
+                                   stable prefix               | variable
+
+    Keeping <task> last means two back-to-back calls on the same file + mode
+    share a long cacheable prefix, so the second one can hit the 5-minute
+    prompt cache instead of paying full input cost.
     """
     parts: list[str] = []
 
-    # Task -- always first, always present
-    parts.append(f"<task>{task}</task>")
-
-    # Intent instruction -- only when there are no explicit constraints
-    # (constraints already encode the intent more precisely)
-    if not constraints:
-        hint = _INTENT_HINTS.get(intent)
-        if hint:
-            parts.append(f"<intent>{hint}</intent>")
-
-    # Context -- file contents, pre-compressed
-    if context:
-        parts.append(f"<context>\n{context}\n</context>")
+    # --- Stable prefix (cacheable) ---
 
     # Constraints -- only if provided (no defaults)
     if constraints:
@@ -49,6 +45,27 @@ def build_prompt(
     # Output format -- only if explicitly requested
     if output_format:
         parts.append(f"<format>{output_format}</format>")
+
+    # Intent instruction -- only when there are no explicit constraints
+    # (constraints already encode the intent more precisely)
+    if not constraints:
+        hint = _INTENT_HINTS.get(intent)
+        if hint:
+            parts.append(f"<intent>{hint}</intent>")
+
+    # Two-way context protocol -- lets Claude request more context instead
+    # of hallucinating when compression was too aggressive.
+    if allow_context_request:
+        parts.append(_CONTEXT_PROTOCOL)
+
+    # Context -- file contents, pre-compressed
+    if context:
+        parts.append(f"<context>\n{context}\n</context>")
+
+    # --- Variable (not cached) ---
+
+    # Task -- always last so the prefix stays stable across calls
+    parts.append(f"<task>{task}</task>")
 
     return "\n".join(parts)
 
@@ -62,3 +79,15 @@ _INTENT_HINTS = {
     "review": "Flag bugs and security issues by severity.",
     "general": "",  # No hint needed for questions
 }
+
+
+# Instruction that opens a two-way channel for context. When the pipeline
+# compresses a large file to a structural map, Claude can signal it needs
+# specific lines back instead of guessing. Parsed by run_prompt.py.
+_CONTEXT_PROTOCOL = (
+    "<context-protocol>\n"
+    "If <context> is insufficient to answer well, respond with ONLY:\n"
+    '<need-context file="PATH" lines="START-END" reason="..."/>\n'
+    "and stop. Otherwise proceed normally.\n"
+    "</context-protocol>"
+)
