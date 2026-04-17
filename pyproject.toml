@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claudio-cli"
+dynamic = ["version"]
+description = "Claude Intelligence Optimizer — reduce token waste, structure inputs, optimize Claude workflows"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "Yves Guillaume" }]
+keywords = ["claude", "cli", "ai", "token-optimization", "llm"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Utilities",
+]
+
+[project.urls]
+Homepage = "https://github.com/GuillaumeYves/claudio"
+Repository = "https://github.com/GuillaumeYves/claudio"
+Issues = "https://github.com/GuillaumeYves/claudio/issues"
+
+[project.scripts]
+cld = "claudio.cli:main"
+
+[tool.setuptools.dynamic]
+version = {attr = "claudio.__version__"}
+
+[tool.setuptools.packages.find]
+include = ["claudio*"]
+
+[tool.setuptools.package-data]
+claudio = ["py.typed"]

@@ -1,0 +1,22 @@
+{
+  "name": "My Task Plan",
+  "description": "Describe what this plan accomplishes",
+  "tasks": [
+    {
+      "name": "Task 1 — describe the step",
+      "prompt": "What Claude should do for this step",
+      "context": "Optional additional context or input data",
+      "intent": "general",
+      "constraints": [
+        "Optional constraint 1",
+        "Optional constraint 2"
+      ],
+      "output_format": "Optional: describe expected output structure"
+    },
+    {
+      "name": "Task 2 — next step",
+      "prompt": "What Claude should do next",
+      "intent": "generate"
+    }
+  ]
+}
