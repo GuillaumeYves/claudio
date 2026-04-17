@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/images/claudio.png" alt="claudio logo" width="60%"/>
+  <img src="https://raw.githubusercontent.com/GuillaumeYves/claudio/main/assets/images/claudio.png" alt="claudio logo" width="60%"/>
 </p>
 
 <h1 align="center">Claudio - Claude Intelligence Optimizer</h1>
