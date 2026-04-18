@@ -24,10 +24,10 @@ jobs:
         run: pip install -e .
 
       - name: Verify CLI
-        run: cld --version
+        run: claudio --version
 
       - name: Verify help
-        run: cld --help
+        run: claudio --help
 
       - name: Dry-run test
-        run: cld ask -question --dry-run "test"
+        run: claudio ask -question --dry-run "test"
