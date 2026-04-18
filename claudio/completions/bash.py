@@ -1,11 +1,11 @@
-"""Bash completion script generator for cld."""
+"""Bash completion script generator for claudio."""
 
 
 def generate() -> str:
-    return r'''# Bash completion for cld (Claudio CLI)
-# Add to ~/.bashrc:  eval "$(cld --completions bash)"
+    return r'''# Bash completion for claudio (Claudio CLI)
+# Add to ~/.bashrc:  eval "$(claudio --completions bash)"
 
-_cld_complete() {
+_claudio_complete() {
     local cur prev words cword
     _init_completion || return
 
@@ -29,21 +29,21 @@ _cld_complete() {
             if [[ "$cur" == -* ]]; then
                 COMPREPLY=($(compgen -W "$build_modes $global_flags" -- "$cur"))
             elif [[ "$cur" == @* ]]; then
-                _cld_complete_files
+                _claudio_complete_files
             fi
             ;;
         ask)
             if [[ "$cur" == -* ]]; then
                 COMPREPLY=($(compgen -W "$ask_modes $global_flags" -- "$cur"))
             elif [[ "$cur" == @* ]]; then
-                _cld_complete_files
+                _claudio_complete_files
             fi
             ;;
         run)
             if [[ "$cur" == -* ]]; then
                 COMPREPLY=($(compgen -W "$global_flags" -- "$cur"))
             elif [[ "$cur" == @* ]]; then
-                _cld_complete_files
+                _claudio_complete_files
             fi
             ;;
         stats)
@@ -57,7 +57,7 @@ _cld_complete() {
     esac
 }
 
-_cld_complete_files() {
+_claudio_complete_files() {
     # Complete @path with workspace files
     local prefix="${cur#@}"
     local files
@@ -73,5 +73,5 @@ _cld_complete_files() {
     compopt -o nospace
 }
 
-complete -o default -F _cld_complete cld
+complete -o default -F _claudio_complete claudio
 '''

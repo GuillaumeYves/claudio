@@ -1,9 +1,9 @@
-"""cld stats -- view token usage and cost tracking.
+"""claudio stats -- view token usage and cost tracking.
 
 Usage:
-    cld stats               Show usage summary
-    cld stats --reset       Clear all usage data
-    cld stats --json        Output as JSON
+    claudio stats               Show usage summary
+    claudio stats --reset       Clear all usage data
+    claudio stats --json        Output as JSON
 """
 
 import json
@@ -47,7 +47,7 @@ def _print_stats(stats: dict) -> None:
     # Per-command breakdown
     by_cmd = stats.get("by_command", {})
     if by_cmd:
-        print(f"\n  By Command:")
+        print("\n  By Command:")
         print(f"  {'Command':<22} {'Requests':>9} {'Tokens In':>11} {'Cost':>10}")
         print(f"  {'-'*22} {'-'*9} {'-'*11} {'-'*10}")
 

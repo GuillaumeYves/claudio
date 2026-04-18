@@ -1,4 +1,4 @@
-"""cld ask -- ask Claude a question.
+"""claudio ask -- ask Claude a question.
 
 Modes:
     -review     Code review (security, quality, bugs)
@@ -6,9 +6,9 @@ Modes:
     -debug      Debug an issue (root cause, fix, explanation)
 
 Usage:
-    cld ask -review @auth.py "check for security issues"
-    cld ask -question "how does the auth middleware work"
-    cld ask -debug @server.log -100-200 "why is it timing out"
+    claudio ask -review @auth.py "check for security issues"
+    claudio ask -question "how does the auth middleware work"
+    claudio ask -debug @server.log -100-200 "why is it timing out"
 """
 
 from claudio.pipeline.process import process
@@ -64,7 +64,7 @@ def execute(raw_args: list[str], ctx: dict) -> int:
     out = Output(json_mode=ctx["json_output"], verbose=ctx["verbose"])
 
     if not raw_args:
-        out.error("Usage: cld ask -review|-question|-debug @file ... \"query\"")
+        out.error("Usage: claudio ask -review|-question|-debug @file ... \"query\"")
         return 1
 
     parsed = parse_command_args(raw_args, ASK_MODES)

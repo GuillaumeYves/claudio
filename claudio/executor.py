@@ -5,6 +5,7 @@ import shutil
 import sys
 
 from claudio.config import load_config
+from claudio.utils.spinner import Spinner
 
 
 def find_claude_cli() -> str | None:
@@ -69,14 +70,18 @@ def execute_prompt(
     config = load_config()
     timeout = config.get("timeout", 300)
 
+    spinner_label = f"asking {model}" if model else "asking claude"
     try:
-        result = subprocess.run(
-            cmd,
-            input=prompt,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
+        with Spinner(spinner_label):
+            result = subprocess.run(
+                cmd,
+                input=prompt,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
+            )
     except subprocess.TimeoutExpired:
         print(f"[claudio:error] Claude CLI timed out after {timeout}s.", file=sys.stderr)
         sys.exit(1)

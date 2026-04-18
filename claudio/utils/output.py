@@ -40,22 +40,6 @@ class Output:
         """Print an error to stderr."""
         print(f"[claudio:error] {message}", file=sys.stderr)
 
-    def debug(self, message: str) -> None:
-        """Print debug info (only in verbose mode)."""
-        if self.verbose and not self.json_mode:
-            print(f"[claudio:debug] {message}", file=sys.stderr)
-
-    def diff(self, original: str, modified: str, filename: str = "") -> None:
-        """Output a unified diff."""
-        import difflib
-        diff_lines = difflib.unified_diff(
-            original.splitlines(keepends=True),
-            modified.splitlines(keepends=True),
-            fromfile=f"a/{filename}" if filename else "a/original",
-            tofile=f"b/{filename}" if filename else "b/modified",
-        )
-        sys.stdout.writelines(diff_lines)
-
     def _print_metadata(self, metadata: dict) -> None:
         for key, value in metadata.items():
             print(f"  {key}: {value}", file=sys.stderr)

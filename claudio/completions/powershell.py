@@ -1,11 +1,11 @@
-"""PowerShell completion script generator for cld."""
+"""PowerShell completion script generator for claudio."""
 
 
 def generate() -> str:
-    return r'''# PowerShell completion for cld (Claudio CLI)
-# Add to $PROFILE:  cld --completions powershell | Invoke-Expression
+    return r'''# PowerShell completion for claudio (Claudio CLI)
+# Add to $PROFILE:  claudio --completions powershell | Invoke-Expression
 
-Register-ArgumentCompleter -CommandName cld -Native -ScriptBlock {
+Register-ArgumentCompleter -CommandName claudio -Native -ScriptBlock {
     param($wordToComplete, $commandAst, $cursorPosition)
 
     $commands = @('build', 'ask', 'run', 'stats', 'setup')

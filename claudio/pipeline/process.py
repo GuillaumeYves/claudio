@@ -18,12 +18,6 @@ class PipelineResult:
         self.metadata = metadata
 
     @property
-    def compression_ratio(self) -> float:
-        if self.input_tokens == 0:
-            return 1.0
-        return self.compressed_tokens / self.input_tokens
-
-    @property
     def tokens_saved(self) -> int:
         return self.input_tokens - self.compressed_tokens
 

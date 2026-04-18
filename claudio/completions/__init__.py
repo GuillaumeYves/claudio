@@ -1,4 +1,4 @@
-"""Shell completion generators for cld."""
+"""Shell completion generators for claudio."""
 
 # Command tree -- single source of truth for completions and help.
 COMMANDS = {

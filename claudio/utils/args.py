@@ -7,10 +7,8 @@ This order is enforced — violations produce clear errors.
 from __future__ import annotations
 
 import re
-import sys
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from pathlib import Path
 
 from claudio.utils.files import read_file
 
@@ -34,11 +32,6 @@ class FileAttachment:
     lines: str | None = None
     content: str = ""
 
-    @property
-    def label(self) -> str:
-        suffix = f" (lines {self.lines})" if self.lines else ""
-        return f"{self.path}{suffix}"
-
 
 @dataclass
 class ParsedArgs:
@@ -47,6 +40,25 @@ class ParsedArgs:
     prompt: str  # the user's description/question
     files: list[FileAttachment] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+
+
+def _normalize_file_flags(raw_args: list[str]) -> list[str]:
+    """Rewrite `-f path` / `--file path` to `@path`.
+
+    Why: PowerShell treats a bare `@name` as the splatting operator and
+    silently drops it when `$name` is unset. `-f`/`--file` is a safe
+    alternative that survives PowerShell parsing.
+    """
+    out: list[str] = []
+    i = 0
+    while i < len(raw_args):
+        if raw_args[i] in ("-f", "--file") and i + 1 < len(raw_args):
+            out.append("@" + raw_args[i + 1])
+            i += 2
+        else:
+            out.append(raw_args[i])
+            i += 1
+    return out
 
 
 def parse_command_args(raw_args: list[str], valid_modes: dict[str, str]) -> ParsedArgs:
@@ -59,12 +71,14 @@ def parse_command_args(raw_args: list[str], valid_modes: dict[str, str]) -> Pars
         -debug @server.log -100-200 "timeout error"
         -generate @models/user.py "REST endpoint"
         -question "how does auth work"
+        -refactor -f main.py -10-25 "reduce complexity"    # PowerShell-safe
 
     Order violations produce errors:
         "some text" @file.py        -> error: @file after description
         @file.py -refactor          -> error: mode flag after @file
         "text" -refactor @file.py   -> error: mode flag after description
     """
+    raw_args = _normalize_file_flags(raw_args)
     mode: str | None = None
     prompt_parts: list[str] = []
     files: list[FileAttachment] = []

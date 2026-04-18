@@ -35,18 +35,25 @@ cd claudio
 pip install -e .
 ```
 
-Both options install the `cld` command. Requires **Python 3.10+**.
+Both options install a single command: **`claudio`**.
+
+- Run bare `claudio` to drop *inside* the tool — interactive session with tab-completion, history, and slash commands (same feel as `claude`).
+- Run `claudio <subcommand> …` for one-shot use in scripts, pipes, or CI (`claudio build -r @file "…"`, `claudio ask -q "…"`).
+
+> **Usage pattern — same as `claude`:** `cd` into your project first, *then* launch `claudio`. `@file` completion, `claudio-task.json`, and the `.claudio/cache/` folder all resolve against the current working directory. To switch projects mid-session without exiting, use `/cwd <path>`.
+
+Requires **Python 3.10+**. Everything is bundled by default — no extras to enable.
 
 ### Post-install setup
 
 After installing, run:
 
 ```bash
-cld setup
+claudio setup
 ```
 
 This will:
-- **Detect if `cld` is on your PATH** and offer to add it automatically (recommended for speed -- type `cld` from any directory instead of `python -m claudio`)
+- **Detect if `claudio` is on your PATH** and offer to add it automatically (recommended for speed -- type `claudio` from any directory instead of `python -m claudio`)
 - **Verify Claude CLI** is installed
 - **Create config directory** at `~/.config/claudio/`
 - **Install shell completions** (Bash, Zsh, or PowerShell) for tab-completing commands, modes, flags, and `@file` paths
@@ -62,14 +69,14 @@ Claudio calls the [Claude CLI](https://docs.anthropic.com/en/docs/claude-code) u
 Claudio has **3 core commands** + `stats` and `setup`. Each core command takes a **mode**, optional **file attachments**, and a **description**.
 
 ```
-cld <command> <mode> [@file [-lines]] ... [description]
+claudio <command> <mode> [@file [-lines]] ... [description]
 ```
 
 **Argument order is strictly enforced**: mode first, then files, then description. This creates a logical parsing flow that lets Claude process the request with zero ambiguity.
 
 ---
 
-### `cld build`
+### `claudio build`
 
 Create or modify code.
 
@@ -82,16 +89,16 @@ Create or modify code.
 
 ```bash
 # Refactor a specific function (lines 40-80)
-cld build -refactor @src/auth.py -40-80 "extract the validation logic into its own function"
+claudio build -refactor @src/auth.py -40-80 "extract the validation logic into its own function"
 
 # Refactor with multiple context files
-cld build -refactor @src/handler.py @src/models.py "consolidate duplicate error handling"
+claudio build -refactor @src/handler.py @src/models.py "consolidate duplicate error handling"
 
 # Generate new code using existing files as reference
-cld build -generate @src/models/user.py "create a REST endpoint for user CRUD operations"
+claudio build -generate @src/models/user.py "create a REST endpoint for user CRUD operations"
 
 # Generate from scratch
-cld build -generate "python script that watches a directory for CSV changes and loads them into SQLite"
+claudio build -generate "python script that watches a directory for CSV changes and loads them into SQLite"
 ```
 
 **Refactor output:** unified diff with one-line explanation per change.
@@ -99,7 +106,7 @@ cld build -generate "python script that watches a directory for CSV changes and 
 
 ---
 
-### `cld ask`
+### `claudio ask`
 
 Ask Claude a question.
 
@@ -113,22 +120,22 @@ Ask Claude a question.
 
 ```bash
 # Code review
-cld ask -review @src/auth.py "check for security issues"
+claudio ask -review @src/auth.py "check for security issues"
 
 # Review specific lines
-cld ask -review @src/api/handler.py -120-180 "is this input validation sufficient"
+claudio ask -review @src/api/handler.py -120-180 "is this input validation sufficient"
 
 # Ask a question with file context
-cld ask -question @src/pipeline/process.py "how does the compression stage work"
+claudio ask -question @src/pipeline/process.py "how does the compression stage work"
 
 # Ask without files
-cld ask -question "what is the difference between asyncio.gather and asyncio.wait"
+claudio ask -question "what is the difference between asyncio.gather and asyncio.wait"
 
 # Debug with error context
-cld ask -debug @logs/error.log -500-520 "why is the connection pool exhausting"
+claudio ask -debug @logs/error.log -500-520 "why is the connection pool exhausting"
 
 # Debug specific code
-cld ask -debug @src/db.py -30-45 "this query returns duplicates when it shouldn't"
+claudio ask -debug @src/db.py -30-45 "this query returns duplicates when it shouldn't"
 ```
 
 **Review output:** issues ranked by severity with fixes.
@@ -137,25 +144,25 @@ cld ask -debug @src/db.py -30-45 "this query returns duplicates when it shouldn'
 
 ---
 
-### `cld run`
+### `claudio run`
 
 Execute a multi-step task plan from `claudio-task.json`.
 
 ```bash
 # Execute the plan (prompts for confirmation)
-cld run
+claudio run
 
 # Execute with additional file context
-cld run @src/config.py @docs/api-spec.md
+claudio run @src/config.py @docs/api-spec.md
 
 # Preview all prompts without executing
-cld run --dry-run
+claudio run --dry-run
 
 # Run as a single agentic session with tool access (Read/Grep/Glob)
-cld run --agentic
+claudio run --agentic
 ```
 
-`cld run` always reads from `claudio-task.json` in the current directory. It validates the file, warns about missing fields, and asks for confirmation before executing.
+`claudio run` always reads from `claudio-task.json` in the current directory. It validates the file, warns about missing fields, and asks for confirmation before executing.
 
 **Execution modes:**
 
@@ -203,43 +210,82 @@ A template is provided at `claudio-task.template.json`.
 
 ---
 
-### `cld setup`
+### `claudio setup`
 
 Post-install configuration.
 
 ```bash
-cld setup
+claudio setup
 ```
 
 Checks PATH, offers automatic setup, installs shell completions, verifies Claude CLI.
 
 ---
 
+## Interactive Mode (`claudio`)
+
+Running `claudio` drops you **inside** the tool — same feel as `claude`. Type commands directly at the prompt. No prefix required for anything.
+
+```bash
+claudio
+```
+
+```
+ ▄████▄   ██▓    ▄▄▄      █    ██ ▓█████▄  ██▓ ▒█████
+...
+  Claude Intelligence Optimizer  v1.2.0
+  Type  /help  for commands   ·   @  to reference files   ·   Ctrl-D to exit
+
+claudio> build -r @src/auth.py -40-80 "extract validation"
+claudio> ask -q "what is dependency injection"
+claudio> /model haiku
+claudio> run --dry-run
+```
+
+Every command you'd run as `claudio build …` works as just `build …` inside the session. `@` triggers live tab-completion from the current directory (`.git`, `node_modules`, `__pycache__`, and other noise are filtered out).
+
+**Slash commands:**
+
+| Command | Purpose |
+|---------|---------|
+| `/help` | Show available commands |
+| `/model NAME` | Pin a model for the session (`haiku`, `sonnet`, `opus`). `/model auto` resets. |
+| `/cwd [PATH]` | Show or change the working directory |
+| `/clear` | Clear the screen |
+| `/stats` | Shortcut for `claudio stats` inside the REPL |
+| `/exit` \| `/quit` | Exit (Ctrl-D also works) |
+
+History is stored at `~/.claudio/repl_history` (or `$CLAUDIO_HOME/repl_history`). Errors in one command never kill the session — you stay inside until you exit.
+
+The REPL requires a TTY. When stdin is piped or redirected, bare `claudio` exits with a hint pointing you at the one-shot form (`claudio <subcommand> …`).
+
+---
+
 ## Shell Completions
 
-`cld setup` installs completions automatically. To install manually:
+`claudio setup` installs completions automatically. To install manually:
 
 **Bash** (add to `~/.bashrc`):
 ```bash
-eval "$(cld --completions bash)"
+eval "$(claudio --completions bash)"
 ```
 
 **Zsh** (add to `~/.zshrc`):
 ```bash
-eval "$(cld --completions zsh)"
+eval "$(claudio --completions zsh)"
 ```
 
 **PowerShell** (add to `$PROFILE`):
 ```powershell
-cld --completions powershell | Invoke-Expression
+claudio --completions powershell | Invoke-Expression
 ```
 
 What you get:
 ```
-cld <TAB>              -> build  ask  run  stats  setup
-cld build -<TAB>       -> -refactor  -r  -generate  -g
-cld ask -<TAB>         -> -review  -rv  -question  -q  -debug  -d
-cld ask -d @src/<TAB>  -> @src/main.py  @src/auth.py  ...
+claudio <TAB>              -> build  ask  run  stats  setup
+claudio build -<TAB>       -> -refactor  -r  -generate  -g
+claudio ask -<TAB>         -> -review  -rv  -question  -q  -debug  -d
+claudio ask -d @src/<TAB>  -> @src/main.py  @src/auth.py  ...
 ```
 
 ---
@@ -260,12 +306,12 @@ Cache hits show a `[cache hit]` indicator:
 
 **Bypass cache** for a single request:
 ```bash
-cld ask -question --no-cache @src/main.py "explain this"
+claudio ask -question --no-cache @src/main.py "explain this"
 ```
 
 **Clear all cached responses:**
 ```bash
-cld stats --reset
+claudio stats --reset
 ```
 
 The cache is deterministic: if the file hasn't changed and your prompt is the same, you get the same answer. If you edit the file and run again, the prompt changes (different file contents) so you get a fresh response automatically.
@@ -277,7 +323,7 @@ The cache is deterministic: if the file hasn't changed and your prompt is the sa
 Every request is logged with token estimates and cost. View your usage with:
 
 ```bash
-cld stats
+claudio stats
 ```
 
 ```
@@ -302,12 +348,12 @@ Claudio Usage Stats
 
 **JSON output** for scripts/dashboards:
 ```bash
-cld stats --json
+claudio stats --json
 ```
 
 **Reset all data** (also clears cache):
 ```bash
-cld stats --reset
+claudio stats --reset
 ```
 
 Usage data is stored at `~/.config/claudio/usage.json` (global, persists across workspaces).
@@ -319,7 +365,7 @@ Usage data is stored at `~/.config/claudio/usage.json` (global, persists across 
 Attach up to **10 files** from your workspace using `@path`:
 
 ```bash
-cld build -refactor @src/main.py "simplify error handling"
+claudio build -refactor @src/main.py "simplify error handling"
 ```
 
 Add a **line range** immediately after any `@file`:
@@ -333,10 +379,22 @@ Add a **line range** immediately after any `@file`:
 **Multiple files:**
 
 ```bash
-cld ask -review @src/auth.py -30-60 @src/middleware.py @tests/test_auth.py "is the auth flow correct"
+claudio ask -review @src/auth.py -30-60 @src/middleware.py @tests/test_auth.py "is the auth flow correct"
 ```
 
 Each file gets its own line range. Claude receives only the lines that matter -- not entire files.
+
+### PowerShell note
+
+PowerShell treats `@name` as the splatting operator and silently drops the token when `$name` isn't a defined variable — so `claudio build -r @src/main.py "fix"` becomes `claudio build -r "fix"` with no warning. Two safe alternatives on PowerShell:
+
+```powershell
+claudio build -r '@src/main.py' "fix"          # quote the @-token
+claudio build -r -f src/main.py "fix"          # use -f / --file instead
+claudio build -r --file src/main.py -10-25 "fix"
+```
+
+`-f` / `--file` is rewritten to `@<path>` internally, so line ranges and all other features work identically. Bash, zsh, cmd, and the `claudio` REPL are unaffected.
 
 ---
 
@@ -345,7 +403,7 @@ Each file gets its own line range. Claude receives only the lines that matter --
 Arguments **must** follow this order:
 
 ```
-cld <command> <mode> [@file [-lines]] ... [description]
+claudio <command> <mode> [@file [-lines]] ... [description]
      1          2          3                    4
 ```
 
@@ -359,9 +417,9 @@ cld <command> <mode> [@file [-lines]] ... [description]
 **Wrong order = error:**
 
 ```bash
-cld build "text" -refactor @file.py      # ERROR: mode after description
-cld build -refactor "text" @file.py      # ERROR: file after description
-cld build @file.py -refactor "text"      # ERROR: mode after file
+claudio build "text" -refactor @file.py      # ERROR: mode after description
+claudio build -refactor "text" @file.py      # ERROR: file after description
+claudio build @file.py -refactor "text"      # ERROR: mode after file
 ```
 
 **Why strict order?** It eliminates parsing ambiguity. When Claude receives the structured prompt, every field is in a predictable position. No tokens wasted on disambiguation.
@@ -373,9 +431,9 @@ cld build @file.py -refactor "text"      # ERROR: mode after file
 Global flags can go anywhere after the command:
 
 ```bash
-cld build -refactor --dry-run @file.py "simplify"
-cld ask -debug --verbose @log.txt "what happened"
-cld run --json
+claudio build -refactor --dry-run @file.py "simplify"
+claudio ask -debug --verbose @log.txt "what happened"
+claudio run --json
 ```
 
 | Flag | Description |
@@ -388,7 +446,7 @@ cld run --json
 | `--session-id UUID` | Start a session with a fixed ID (reusable via `--resume`) |
 | `--resume UUID` | Resume an existing Claude session (warm prompt cache) |
 | `--feedback` | Let Claude request missing context; auto-retry once with expanded range |
-| `--agentic` | (`cld run` only) Execute the plan in one agentic session with tool access |
+| `--agentic` | (`claudio run` only) Execute the plan in one agentic session with tool access |
 | `-v`, `--version` | Print version |
 | `-h`, `--help` | Show help |
 
@@ -455,17 +513,19 @@ def validate_token(token):
 
 **Zero duplication:** The user's description appears exactly once in `<task>`. File contents appear exactly once in `<context>`.
 
-**No default padding:** Question-mode (`cld ask -question`) produces just `<task>your question</task>` -- no constraints, no format instructions, no boilerplate. Claude doesn't need to be told "be concise" on a simple question.
+**No default padding:** Question-mode (`claudio ask -question`) produces just `<task>your question</task>` -- no constraints, no format instructions, no boilerplate. Claude doesn't need to be told "be concise" on a simple question.
 
 ### 4. Execute
 
 Sends to Claude CLI via `claude --print`. In `--dry-run` mode, prints the prompt instead.
 
+While the call is in flight, a stderr spinner (`| asking sonnet (2.3s)`) shows progress with an elapsed-time counter. It stays silent when stderr is not a TTY (piped / CI / scripts) so captured output is never polluted, and it degrades to ASCII on legacy Windows consoles that can't render Unicode.
+
 Flags plumbed to the Claude CLI when set:
 
 - `--model` → `claude --model` (auto-routed by intent + input size if unset; see below)
 - `--session-id` / `--resume` → session continuity across calls (warm prompt cache)
-- `--agentic` (cld run) → adds `--allowedTools Read,Grep,Glob` for agentic execution
+- `--agentic` (claudio run) → adds `--allowedTools Read,Grep,Glob` for agentic execution
 
 ---
 
@@ -497,7 +557,7 @@ Claudio's compressor trades raw code for a structural map above 50 lines. That's
 when the compressed context is insufficient. Claudio parses that signal, expands the requested file range, and re-runs the prompt once with the richer context (no loops — max one retry per call).
 
 ```bash
-cld ask -review --feedback @src/auth.py "is the token flow correct?"
+claudio ask -review --feedback @src/auth.py "is the token flow correct?"
 # -> Claude replies: <need-context file="auth.py" lines="120-180" reason="need validate_refresh body"/>
 # -> Claudio re-runs with those lines included
 ```
@@ -512,9 +572,9 @@ For iterative work, reuse a Claude session so the prompt cache stays warm and co
 
 ```bash
 ID=$(uuidgen)
-cld ask -question --session-id $ID @src/pipeline.py "walk me through this"
-cld ask -question --resume $ID "now explain the compression stage"
-cld ask -question --resume $ID "why XML over JSON in the prompt?"
+claudio ask -question --session-id $ID @src/pipeline.py "walk me through this"
+claudio ask -question --resume $ID "now explain the compression stage"
+claudio ask -question --resume $ID "why XML over JSON in the prompt?"
 ```
 
 `--resume` bypasses the local response cache (the point is to get a fresh Claude turn, not a stored echo).
@@ -527,11 +587,11 @@ Real measurements from the Claudio codebase itself:
 
 | Command | Input | After pipeline | Saved |
 |---------|-------|---------------|-------|
-| `cld build -r @filter.py "simplify"` | 2,844 tokens | 128 tokens | **96%** |
-| `cld ask -rv @executor.py "security"` | 650 tokens | 80 tokens | **94%** |
-| `cld ask -q @process.py "how it works"` | 1,161 tokens | 92 tokens | **91%** |
-| `cld ask -d @files.py -28-45 "crash"` | 209 tokens | 170 tokens | **21%** |
-| `cld ask -q "prompt caching"` | 1 token | 9 tokens | n/a |
+| `claudio build -r @filter.py "simplify"` | 2,844 tokens | 128 tokens | **96%** |
+| `claudio ask -rv @executor.py "security"` | 650 tokens | 80 tokens | **94%** |
+| `claudio ask -q @process.py "how it works"` | 1,161 tokens | 92 tokens | **91%** |
+| `claudio ask -d @files.py -28-45 "crash"` | 209 tokens | 170 tokens | **21%** |
+| `claudio ask -q "prompt caching"` | 1 token | 9 tokens | n/a |
 
 Small inputs (under 50 lines, no compression needed) see modest savings from comment/whitespace stripping. Large files see 90%+ savings from structural compression. Questions without files add near-zero overhead.
 
@@ -569,10 +629,10 @@ Results go to stdout, info/warnings to stderr:
 
 ```bash
 # JSON output piped to jq
-cld --json ask -question @api.py "list the public functions" | jq '.result'
+claudio --json ask -question @api.py "list the public functions" | jq '.result'
 
 # Use in scripts
-if cld --dry-run --verbose build -refactor @src/ 2>&1 | grep -q "WARNING"; then
+if claudio --dry-run --verbose build -refactor @src/ 2>&1 | grep -q "WARNING"; then
   echo "Input too large, consider narrowing scope"
 fi
 ```
@@ -583,18 +643,19 @@ fi
 
 ```
 claudio/
-  cli.py                 Entry point and command router
+  cli.py                 Command router (subcommand dispatch)
+  repl.py                Unified `claudio` entry point (REPL + subcommand dispatch)
   cache.py               Response cache (SHA-256 keyed, TTL-based)
   usage.py               Cost and usage tracking
   config.py              Configuration management
-  executor.py            Claude CLI integration
+  executor.py            Claude CLI integration (with progress spinner)
   commands/
-    build.py             cld build (-refactor, -generate)
-    ask.py               cld ask (-review, -question, -debug)
-    run.py               cld run (claudio-task.json)
+    build.py             claudio build (-refactor, -generate)
+    ask.py               claudio ask (-review, -question, -debug)
+    run.py               claudio run (claudio-task.json)
     run_prompt.py         Shared execution with cache + tracking
-    stats.py             cld stats (usage dashboard)
-    setup.py             cld setup (PATH, completions, verification)
+    stats.py             claudio stats (usage dashboard)
+    setup.py             claudio setup (PATH, completions, verification)
   completions/
     bash.py              Bash completion generator
     zsh.py               Zsh completion generator
@@ -609,6 +670,8 @@ claudio/
     tokens.py            Token estimation
     output.py            Output formatting
     files.py             File reading and ingestion
+    spinner.py           TTY-only stderr progress spinner
+tests/                   pytest suite (60 tests: args, repl, spinner, integration)
 ```
 
 ---

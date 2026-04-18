@@ -1,6 +1,5 @@
 """File reading and ingestion utilities."""
 
-import sys
 from pathlib import Path
 
 
@@ -43,33 +42,3 @@ def extract_lines(content: str, line_spec: str) -> str:
     start = max(0, start)
     end = min(len(all_lines), end)
     return "".join(all_lines[start:end])
-
-
-def read_stdin() -> str:
-    """Read all content from stdin (non-blocking check)."""
-    if sys.stdin.isatty():
-        return ""
-    return sys.stdin.read()
-
-
-def collect_files(directory: str, extensions: set[str] | None = None, max_files: int = 50) -> list[Path]:
-    """Collect relevant files from a directory."""
-    p = Path(directory)
-    if not p.is_dir():
-        raise ValueError(f"Not a directory: {directory}")
-
-    skip_dirs = {".git", "__pycache__", "node_modules", ".venv", "venv", "dist", "build", ".tox"}
-
-    files = []
-    for item in sorted(p.rglob("*")):
-        if any(skip in item.parts for skip in skip_dirs):
-            continue
-        if not item.is_file():
-            continue
-        if extensions and item.suffix.lower() not in extensions:
-            continue
-        files.append(item)
-        if len(files) >= max_files:
-            break
-
-    return files

@@ -8,10 +8,11 @@ import sys
 from claudio import __version__
 
 USAGE = """\
-cld -- Claude Intelligence Optimizer
+claudio -- Claude Intelligence Optimizer
 
-Syntax (strict order):
-    cld <command> <mode> [@file [-lines]] ... [description]
+Usage:
+    claudio                                  Launch the interactive session
+    claudio <command> <mode> [@file [-lines]] ... [description]   One-shot
 
 Commands:
     build   Create or modify code
@@ -31,8 +32,14 @@ Ask modes:
 
 File attachments (max 10):
     @path/to/file       Attach a workspace file as context
+    -f path | --file    Same as @path (PowerShell-safe — see note below)
     -N                  Single line from preceding @file
     -N-N                Line range from preceding @file
+
+  PowerShell note:
+    PowerShell treats `@name` as the splatting operator and silently drops
+    it when `$name` is unset. On PowerShell, either quote: '@path', or use
+    `-f path` instead. Bash/zsh/cmd are unaffected.
 
 Global flags:
     --dry-run           Show optimized prompt without sending to Claude
@@ -43,15 +50,18 @@ Global flags:
     --session-id UUID   Start a session with a fixed ID (reusable via --resume)
     --resume UUID       Resume an existing Claude session (warm prompt cache)
     --feedback          Let Claude request missing context (auto-retry once)
-    --agentic           (cld run only) Execute the plan in one agentic session
+    --agentic           (claudio run only) Execute the plan in one agentic session
     --completions SHELL Output shell completion script (bash/zsh/powershell)
     -v, --version       Show version
     -h, --help          Show this help
 
+Tip: inside the interactive session you drop the `claudio` prefix — just
+type `build -r @file.py "..."`, `ask -q "..."`, `/model haiku`, etc.
+
 Argument order is enforced:
-    cld build -refactor @main.py -10-25 "reduce complexity"     OK
-    cld ask -debug @server.log -100-200 "timeout error"         OK
-    cld build "text" -refactor @file.py                         ERROR
+    claudio build -refactor @main.py -10-25 "reduce complexity"     OK
+    claudio ask -debug @server.log -100-200 "timeout error"         OK
+    claudio build "text" -refactor @file.py                         ERROR
 """
 
 
@@ -122,7 +132,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"claudio {__version__}")
         return 0
 
-    # Shell completions: cld --completions bash|zsh|powershell
+    # Shell completions: claudio --completions bash|zsh|powershell
     if argv[0] == "--completions" and len(argv) >= 2:
         return _output_completions(argv[1])
 

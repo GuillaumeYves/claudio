@@ -1,12 +1,12 @@
-"""cld build -- create or modify code.
+"""claudio build -- create or modify code.
 
 Modes:
     -refactor   Refactor existing code (preserve behavior, improve structure)
     -generate   Generate new code from a description
 
 Usage:
-    cld build -refactor @main.py -10-25 "reduce complexity"
-    cld build -generate @models/user.py "REST endpoint for users"
+    claudio build -refactor @main.py -10-25 "reduce complexity"
+    claudio build -generate @models/user.py "REST endpoint for users"
 """
 
 from claudio.pipeline.process import process
@@ -54,7 +54,7 @@ def execute(raw_args: list[str], ctx: dict) -> int:
     out = Output(json_mode=ctx["json_output"], verbose=ctx["verbose"])
 
     if not raw_args:
-        out.error("Usage: cld build -refactor|-generate @file ... \"description\"")
+        out.error("Usage: claudio build -refactor|-generate @file ... \"description\"")
         return 1
 
     parsed = parse_command_args(raw_args, BUILD_MODES)

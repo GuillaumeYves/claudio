@@ -1,12 +1,11 @@
-"""cld setup -- post-install configuration.
+"""claudio setup -- post-install configuration.
 
-Detects if cld is on PATH, offers to add it, verifies Claude CLI.
+Detects if claudio is on PATH, offers to add it, verifies Claude CLI.
 """
 
 import os
 import platform
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 
@@ -14,17 +13,17 @@ from pathlib import Path
 def execute(raw_args: list[str], ctx: dict) -> int:
     print("Claudio -- Post-install setup\n")
 
-    # Step 1: Check if cld is already on PATH
-    cld_on_path = shutil.which("cld") is not None
+    # Step 1: Check if claudio is already on PATH
+    on_path = shutil.which("claudio") is not None
 
-    if cld_on_path:
-        print("[OK] cld is on PATH")
+    if on_path:
+        print("[OK] claudio is on PATH")
     else:
-        print("[!!] cld is NOT on PATH")
+        print("[!!] claudio is NOT on PATH")
         scripts_dir = _find_scripts_dir()
 
         if scripts_dir:
-            print(f"\n  Recommended: add cld to PATH for fast access from any terminal.")
+            print("\n  Recommended: add claudio to PATH for fast access from any terminal.")
             print(f"  Scripts directory: {scripts_dir}\n")
 
             try:
@@ -39,7 +38,7 @@ def execute(raw_args: list[str], ctx: dict) -> int:
                     print(f"\n[OK] Added {scripts_dir} to PATH")
                     print("     Restart your terminal for changes to take effect.")
                 else:
-                    print(f"\n[!!] Could not add automatically.")
+                    print("\n[!!] Could not add automatically.")
                     _print_manual_instructions(scripts_dir)
             else:
                 print()
@@ -71,7 +70,7 @@ def execute(raw_args: list[str], ctx: dict) -> int:
     print()
     _setup_completions()
 
-    print("\nSetup complete. Run: cld --help")
+    print("\nSetup complete. Run: claudio --help")
     return 0
 
 
@@ -82,33 +81,32 @@ def _setup_completions() -> None:
 
     if system == "Windows":
         # Windows: PowerShell is the primary shell
-        profile_cmd = "$PROFILE"
-        eval_cmd = 'cld --completions powershell | Invoke-Expression'
+        eval_cmd = 'claudio --completions powershell | Invoke-Expression'
         shell_name = "PowerShell"
         profile_path = _find_powershell_profile()
         append_line = f'\n# Claudio CLI completions\n{eval_cmd}\n'
     elif "zsh" in shell:
         shell_name = "Zsh"
         profile_path = Path.home() / ".zshrc"
-        eval_cmd = 'eval "$(cld --completions zsh)"'
+        eval_cmd = 'eval "$(claudio --completions zsh)"'
         append_line = f'\n# Claudio CLI completions\n{eval_cmd}\n'
     else:
         shell_name = "Bash"
         profile_path = Path.home() / ".bashrc"
-        eval_cmd = 'eval "$(cld --completions bash)"'
+        eval_cmd = 'eval "$(claudio --completions bash)"'
         append_line = f'\n# Claudio CLI completions\n{eval_cmd}\n'
 
     # Check if already installed
     if profile_path and profile_path.exists():
         existing = profile_path.read_text(errors="replace")
-        if "cld --completions" in existing:
+        if "claudio --completions" in existing:
             print(f"[OK] {shell_name} completions already installed")
             return
 
     print(f"  Tab completion for {shell_name} enables:")
-    print(f"    cld <TAB>          -> build, ask, run, setup")
-    print(f"    cld build -<TAB>   -> -refactor, -generate, ...")
-    print(f"    cld ask -d @<TAB>  -> @file paths from workspace\n")
+    print("    claudio <TAB>          -> build, ask, run, setup")
+    print("    claudio build -<TAB>   -> -refactor, -generate, ...")
+    print("    claudio ask -d @<TAB>  -> @file paths from workspace\n")
 
     try:
         answer = input(f"  Install {shell_name} completions? [Y/n] ").strip().lower()
@@ -134,21 +132,21 @@ def _setup_completions() -> None:
 
 
 def _find_scripts_dir() -> str | None:
-    """Find the pip scripts directory where cld would be installed."""
+    """Find the pip scripts directory where claudio would be installed."""
     # Check user scripts first (pip install --user)
     user_scripts = Path(sys.prefix) / "Scripts"
-    if user_scripts.exists() and (user_scripts / "cld.exe").exists():
+    if user_scripts.exists() and (user_scripts / "claudio.exe").exists():
         return str(user_scripts)
-    if user_scripts.exists() and (user_scripts / "cld").exists():
+    if user_scripts.exists() and (user_scripts / "claudio").exists():
         return str(user_scripts)
 
     # Check site-packages bin
     for p in sys.path:
         scripts = Path(p).parent / "Scripts"
-        if scripts.exists() and any(scripts.glob("cld*")):
+        if scripts.exists() and any(scripts.glob("claudio*")):
             return str(scripts)
         scripts = Path(p).parent / "bin"
-        if scripts.exists() and any(scripts.glob("cld*")):
+        if scripts.exists() and any(scripts.glob("claudio*")):
             return str(scripts)
 
     # Fallback: derive from sys.executable
@@ -243,12 +241,12 @@ def _print_manual_instructions(scripts_dir: str) -> None:
     system = platform.system()
 
     if system == "Windows":
-        print(f"  To add cld to PATH manually:\n")
-        print(f"    1. Open Settings > System > About > Advanced system settings")
-        print(f"    2. Click 'Environment Variables'")
-        print(f"    3. Edit 'Path' under User variables")
+        print("  To add claudio to PATH manually:\n")
+        print("    1. Open Settings > System > About > Advanced system settings")
+        print("    2. Click 'Environment Variables'")
+        print("    3. Edit 'Path' under User variables")
         print(f"    4. Add: {scripts_dir}")
-        print(f"\n  Or run in PowerShell (admin):")
+        print("\n  Or run in PowerShell (admin):")
         print(f'    [Environment]::SetEnvironmentVariable("Path", $env:Path + ";{scripts_dir}", "User")')
     else:
         shell = os.environ.get("SHELL", "/bin/bash")
@@ -256,7 +254,7 @@ def _print_manual_instructions(scripts_dir: str) -> None:
             rc = "~/.zshrc"
         else:
             rc = "~/.bashrc"
-        print(f"  To add cld to PATH manually:\n")
+        print("  To add claudio to PATH manually:\n")
         print(f'    echo \'export PATH="{scripts_dir}:$PATH"\' >> {rc}')
         print(f"    source {rc}")
 

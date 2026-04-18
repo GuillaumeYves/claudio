@@ -1,4 +1,4 @@
-"""cld run — execute a task plan from claudio-task.json.
+"""claudio run — execute a task plan from claudio-task.json.
 
 Always reads claudio-task.json from the current workspace.
 Validates required fields and warns about missing ones.
@@ -14,9 +14,9 @@ Two execution modes:
                          it decides it needs mid-flight.
 
 Usage:
-    cld run
-    cld run @extra-context.py @config.yaml
-    cld run --agentic           # single agentic session with tool access
+    claudio run
+    claudio run @extra-context.py @config.yaml
+    claudio run --agentic           # single agentic session with tool access
 """
 
 import json
@@ -24,19 +24,14 @@ import sys
 from pathlib import Path
 
 from claudio.pipeline.process import process
-from claudio.pipeline.prompt import build_prompt
 from claudio.commands.run_prompt import execute_with_tracking
-from claudio.executor import execute_prompt
-from claudio.cache import cache_get, cache_put
-from claudio.usage import log_request
-from claudio.utils.tokens import estimate_tokens
+from claudio.utils.tokens import estimate_tokens, format_token_info
 from claudio.utils.args import (
     parse_command_args,
     resolve_file_attachments,
     format_file_context,
 )
 from claudio.utils.output import Output
-from claudio.utils.tokens import format_token_info
 
 TASK_FILE = "claudio-task.json"
 
@@ -61,14 +56,14 @@ def execute(raw_args: list[str], ctx: dict) -> int:
 
     # Prompt text is ignored for run — warn if provided
     if parsed.prompt.strip():
-        out.warn(f"cld run ignores inline text: \"{parsed.prompt}\". Use claudio-task.json for task definitions.")
+        out.warn(f"claudio run ignores inline text: \"{parsed.prompt}\". Use claudio-task.json for task definitions.")
 
     # Load claudio-task.json
     task_path = Path(TASK_FILE)
     if not task_path.exists():
         out.error(
             f"{TASK_FILE} not found in current directory.\n"
-            f"Create one with: cld run --init\n"
+            f"Create one with: claudio run --init\n"
             f"Or create it manually — see the template at claudio-task.template.json"
         )
         return 1
@@ -221,7 +216,7 @@ def _run_agentic(plan: dict, tasks: list[dict], extra_context: str, ctx: dict, o
     # is a review/refactor, the whole session deserves the stronger model.
     intent = _plan_intent(tasks)
 
-    response = execute_with_tracking(
+    execute_with_tracking(
         prompt=prompt,
         ctx=ctx,
         out=out,
@@ -231,7 +226,7 @@ def _run_agentic(plan: dict, tasks: list[dict], extra_context: str, ctx: dict, o
         allowed_tools=AGENTIC_ALLOWED_TOOLS,
     )
 
-    return 0 if response is not None else 1
+    return 0
 
 
 def _build_agentic_prompt(plan_name: str, tasks: list[dict], extra_context: str) -> str:

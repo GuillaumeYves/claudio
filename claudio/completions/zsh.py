@@ -1,12 +1,12 @@
-"""Zsh completion script generator for cld."""
+"""Zsh completion script generator for claudio."""
 
 
 def generate() -> str:
-    return r'''#compdef cld
-# Zsh completion for cld (Claudio CLI)
-# Add to ~/.zshrc:  eval "$(cld --completions zsh)"
+    return r'''#compdef claudio
+# Zsh completion for claudio (Claudio CLI)
+# Add to ~/.zshrc:  eval "$(claudio --completions zsh)"
 
-_cld() {
+_claudio() {
     local -a commands global_flags build_modes ask_modes
 
     commands=(
@@ -52,18 +52,18 @@ _cld() {
         build)
             _arguments \
                 '1:mode:_describe "mode" build_modes' \
-                '*:file:_cld_files' \
+                '*:file:_claudio_files' \
                 $global_flags
             ;;
         ask)
             _arguments \
                 '1:mode:_describe "mode" ask_modes' \
-                '*:file:_cld_files' \
+                '*:file:_claudio_files' \
                 $global_flags
             ;;
         run)
             _arguments \
-                '*:file:_cld_files' \
+                '*:file:_claudio_files' \
                 $global_flags
             ;;
         setup)
@@ -71,7 +71,7 @@ _cld() {
     esac
 }
 
-_cld_files() {
+_claudio_files() {
     # Complete @path with workspace files
     if [[ "$PREFIX" == @* ]]; then
         local fileprefix="${PREFIX#@}"
@@ -81,5 +81,5 @@ _cld_files() {
     fi
 }
 
-_cld "$@"
+_claudio "$@"
 '''
