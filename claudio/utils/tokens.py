@@ -1,4 +1,17 @@
-"""Token estimation and cost-awareness utilities."""
+"""Token estimation and cost-awareness utilities.
+
+Counting strategy (best-available, cached at module level):
+  1. tiktoken with cl100k_base — OpenAI's BPE, but the closest *offline*
+     approximation to Anthropic's tokenizer. Typically within ~10% of
+     Anthropic's actual count; close enough for model routing and cost
+     display, and a lot tighter than the char-density heuristic.
+  2. Character-density heuristic — len(text)/4 for prose, len(text)/3 for
+     code. The original fallback; ships with stdlib only, no install.
+
+tiktoken is an *optional* dependency. If it isn't installed (or fails to
+load its data files in this environment) we silently degrade to the
+heuristic — no errors, same call signature.
+"""
 
 # Approximate token ratios (chars per token) for Claude models.
 # Claude averages ~3.5-4 chars per token for English text, ~3 for code.
@@ -14,8 +27,43 @@ WARN_TOKEN_THRESHOLD = 8_000   # Warn if input exceeds this
 LARGE_TOKEN_THRESHOLD = 32_000  # Strongly suggest compression
 
 
+_BPE_ENCODER = None
+_BPE_ATTEMPTED = False
+
+
+def _get_bpe_encoder():
+    """Lazy-load tiktoken's cl100k_base encoder. Returns None if unavailable."""
+    global _BPE_ENCODER, _BPE_ATTEMPTED
+    if _BPE_ATTEMPTED:
+        return _BPE_ENCODER
+    _BPE_ATTEMPTED = True
+    try:
+        import tiktoken  # type: ignore
+        _BPE_ENCODER = tiktoken.get_encoding("cl100k_base")
+    except Exception:
+        # ImportError (not installed), network errors fetching the BPE,
+        # data-file load failures — all treated the same: fall back.
+        _BPE_ENCODER = None
+    return _BPE_ENCODER
+
+
 def estimate_tokens(text: str, is_code: bool = False) -> int:
-    """Estimate token count from text length."""
+    """Estimate token count for `text`.
+
+    Uses tiktoken when available, the char-density heuristic otherwise.
+    Returns at least 1 even for empty strings so callers can safely divide.
+    """
+    if not text:
+        return 1
+    enc = _get_bpe_encoder()
+    if enc is not None:
+        try:
+            n = len(enc.encode(text))
+            return max(1, n)
+        except Exception:
+            # Encoder corruption / OOM / unusual input: stop using it and
+            # drop through to the heuristic instead of bubbling the error.
+            pass
     ratio = CHARS_PER_TOKEN_CODE if is_code else CHARS_PER_TOKEN_TEXT
     return max(1, int(len(text) / ratio))
 

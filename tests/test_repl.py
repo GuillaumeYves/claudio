@@ -13,6 +13,7 @@ from claudio.repl import (
     _handle_slash,
     _print_banner,
     _history_file,
+    _format_cwd,
 )
 
 
@@ -54,9 +55,180 @@ def test_tokenize_empty_string_returns_empty_list():
     assert _tokenize("") == []
 
 
-def test_tokenize_unclosed_quote_raises_valueerror():
-    with pytest.raises(ValueError):
-        _tokenize('build -r "unclosed')
+# ---- _tokenize: prose semantics ----------------------------------------
+
+def test_tokenize_unquoted_apostrophes_pass_through():
+    assert _tokenize("ask -q i'm not sure which is better") == [
+        "ask", "-q", "i'm not sure which is better",
+    ]
+
+
+def test_tokenize_at_file_then_unquoted_prose():
+    assert _tokenize("build -r @main.py reduce nesting where it's hard to read") == [
+        "build", "-r", "@main.py", "reduce nesting where it's hard to read",
+    ]
+
+
+def test_tokenize_line_range_after_at_file():
+    assert _tokenize("build -r @main.py -10-25 simplify what's here") == [
+        "build", "-r", "@main.py", "-10-25", "simplify what's here",
+    ]
+
+
+def test_tokenize_value_flag_pairs_with_its_value():
+    assert _tokenize("ask -q --model haiku what's the time complexity") == [
+        "ask", "-q", "--model", "haiku", "what's the time complexity",
+    ]
+
+
+def test_tokenize_swallows_trailing_flag_into_prose():
+    # Convention: once prose starts, flag-looking tokens are part of the
+    # message. Users who want flags applied must put them before the prompt.
+    assert _tokenize("ask -q what's wrong --verbose") == [
+        "ask", "-q", "what's wrong --verbose",
+    ]
+
+
+# ---- _augment_argv: REPL auto-chain ------------------------------------
+
+def test_augment_argv_injects_session_id_on_first_turn():
+    from claudio.repl import _augment_argv
+    out = _augment_argv(["ask", "-q", "hello"], None, "sess-uuid", 0)
+    assert "--session-id" in out
+    assert "sess-uuid" in out
+    assert "--resume" not in out
+
+
+def test_augment_argv_uses_resume_on_subsequent_turns():
+    from claudio.repl import _augment_argv
+    out = _augment_argv(["ask", "-q", "hello"], None, "sess-uuid", 1)
+    assert "--resume" in out
+    assert "sess-uuid" in out
+    assert "--session-id" not in out
+
+
+def test_augment_argv_skips_when_user_passed_own_session():
+    from claudio.repl import _augment_argv
+    out = _augment_argv(
+        ["ask", "-q", "hi", "--session-id", "mine"], None, "auto-sess", 1
+    )
+    # User-supplied session id wins; we don't add ours.
+    assert out.count("--session-id") == 1
+    assert "auto-sess" not in out
+
+
+def test_augment_argv_skips_when_user_passed_resume():
+    from claudio.repl import _augment_argv
+    out = _augment_argv(
+        ["ask", "-q", "hi", "--resume", "mine"], None, "auto-sess", 1
+    )
+    assert out.count("--resume") == 1
+    assert "auto-sess" not in out
+    assert "--session-id" not in out
+
+
+def test_augment_argv_threads_session_model():
+    from claudio.repl import _augment_argv
+    out = _augment_argv(["ask", "-q", "hi"], "haiku", "sess", 0)
+    assert "--model" in out
+    assert "haiku" in out
+
+
+def test_augment_argv_skips_model_when_user_passed_own():
+    from claudio.repl import _augment_argv
+    out = _augment_argv(
+        ["ask", "-q", "hi", "--model", "opus"], "haiku", "sess", 0
+    )
+    # User override stays; we don't add the REPL session_model.
+    assert out.count("--model") == 1
+    assert "opus" in out
+    assert "haiku" not in out
+
+
+# ---- /fresh + /session slash commands ----------------------------------
+
+def test_slash_fresh_returns_fresh():
+    assert _handle_slash("/fresh", None, "old-sess") == "fresh"
+
+
+def test_slash_session_prints_current_id(capsys):
+    _handle_slash("/session", None, "abc-123")
+    out = capsys.readouterr().out
+    assert "abc-123" in out
+
+
+def test_slash_session_handles_no_session(capsys):
+    _handle_slash("/session", None, None)
+    out = capsys.readouterr().out
+    assert "(none)" in out or "None" in out
+
+
+def test_tokenize_command_only():
+    assert _tokenize("stats") == ["stats"]
+
+
+# ---- _tokenize: quotes-as-emphasis semantics ---------------------------
+
+def test_tokenize_inline_quotes_are_preserved_verbatim():
+    # The whole prose blob isn't wrapped — only "ruby vs php" is. Inline
+    # quotes survive into the prompt so Claude sees the emphasis.
+    assert _tokenize('ask -q do you think "ruby vs php" is still relevant in 2026?') == [
+        "ask", "-q", 'do you think "ruby vs php" is still relevant in 2026?',
+    ]
+
+
+def test_tokenize_at_symbol_inside_prose_is_not_a_file_ref():
+    # The @ doesn't need to be quoted to be safe — once prose starts (the
+    # word "what" after -q), the rest of the line is verbatim. Quotes are
+    # only for emphasis, not for protection.
+    assert _tokenize("ask -q what does the @ symbol mean in python?") == [
+        "ask", "-q", "what does the @ symbol mean in python?",
+    ]
+
+
+def test_tokenize_flag_lookalikes_inside_prose_are_not_flags():
+    # Same idea for `--`-prefixed tokens that appear mid-prose.
+    assert _tokenize("ask -q how do you decide between --verbose and --debug logging?") == [
+        "ask", "-q", "how do you decide between --verbose and --debug logging?",
+    ]
+
+
+def test_tokenize_whole_prompt_in_quotes_strips_them():
+    # The traditional shell form still works — outer quotes that wrap the
+    # entire prose blob are stripped. This is the only purpose of
+    # wrap-the-whole-thing quoting; it's no longer required for @ or --.
+    assert _tokenize('ask -q "the whole thing is wrapped"') == [
+        "ask", "-q", "the whole thing is wrapped",
+    ]
+
+
+def test_tokenize_two_quoted_phrases_are_not_an_outer_wrap():
+    # First and last char are both `"` but they're not the same pair —
+    # don't strip, preserve the user's emphasis.
+    assert _tokenize('ask -q "first thing" and "second thing"') == [
+        "ask", "-q", '"first thing" and "second thing"',
+    ]
+
+
+def test_tokenize_unbalanced_quotes_pass_through_verbatim():
+    # Earlier this raised ValueError; now the prose blob takes the line
+    # verbatim and lets Claude make sense of it.
+    assert _tokenize('ask -q "open and close" but "open') == [
+        "ask", "-q", '"open and close" but "open',
+    ]
+
+
+def test_tokenize_unclosed_double_quote_passes_through():
+    assert _tokenize('ask -q tell me about "shells') == [
+        "ask", "-q", 'tell me about "shells',
+    ]
+
+
+def test_tokenize_preserves_internal_whitespace_in_prose():
+    # Multiple spaces inside the prose blob survive — we only rstrip().
+    assert _tokenize("ask -q hello    world") == [
+        "ask", "-q", "hello    world",
+    ]
 
 
 # ---- _handle_slash ------------------------------------------------------
@@ -125,18 +297,72 @@ def test_banner_prints_on_utf8_stdout(capsys):
     assert "Claudio" in out or "Claude" in out
 
 
-def test_banner_falls_back_when_encoding_cannot_render_it(monkeypatch):
+def test_banner_includes_claudio_and_cwd(capsys):
+    """The minimal banner must show 'Claudio', a cwd line, and tip text.
+
+    The leading logo (block-char art) is only emitted on utf-capable
+    encodings — we don't assert on it here so the test works regardless
+    of the test runner's stdout encoding.
+    """
+    _print_banner()
+    out = capsys.readouterr().out
+    assert "Claudio" in out
+    assert "cwd:" in out
+    assert "/help" in out
+
+
+def test_banner_uses_no_sleep(monkeypatch):
+    """The minimal banner is instant — no animation, no time.sleep."""
+    import time
+    calls = []
+    monkeypatch.setattr(time, "sleep", lambda s: calls.append(s))
+    _print_banner()
+    assert calls == []
+
+
+# ---- _format_cwd -------------------------------------------------------
+
+def test_format_cwd_returns_string():
+    out = _format_cwd()
+    assert isinstance(out, str)
+    assert out  # non-empty
+
+
+def test_format_cwd_collapses_home_to_tilde(monkeypatch, tmp_path):
+    """A cwd under the user's home appears as ~/relative/path."""
+    # Build a fake home + cwd under it
+    home = tmp_path / "home"
+    sub = home / "proj" / "claudio"
+    sub.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.chdir(sub)
+    out = _format_cwd()
+    assert out == "~/proj/claudio"
+
+
+def test_format_cwd_outside_home_returns_absolute(monkeypatch, tmp_path):
+    """A cwd NOT under home is returned as-is (no ~ collapse)."""
+    other = tmp_path / "other"
+    other.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "elsewhere"))
+    monkeypatch.chdir(other)
+    out = _format_cwd()
+    assert out == other.as_posix()
+
+
+def test_banner_does_not_crash_on_cp1252(monkeypatch):
+    """On a legacy cp1252 console the banner must still print without
+    raising. The minimal layout uses ✻ as its only non-cp1252 glyph, and
+    _print_banner swaps it for `*` when stdout reports a non-utf encoding,
+    so cp1252 streams can encode the whole banner."""
     class CP1252Stdout:
+        encoding = "cp1252"
+
         def __init__(self):
             self.buffer = io.BytesIO()
-            self._raised_once = False
 
         def write(self, s):
-            # Simulate cp1252 choking on non-latin1 chars
-            try:
-                self.buffer.write(s.encode("cp1252"))
-            except UnicodeEncodeError:
-                raise
+            self.buffer.write(s.encode("cp1252"))
             return len(s)
 
         def flush(self):
@@ -144,12 +370,13 @@ def test_banner_falls_back_when_encoding_cannot_render_it(monkeypatch):
 
     fake = CP1252Stdout()
     monkeypatch.setattr(sys, "stdout", fake)
-    # Must not raise -- the fallback ASCII banner must be written instead.
+    # Must not raise; legacy consoles get the ASCII-glyph variant.
     _print_banner()
     written = fake.buffer.getvalue()
     assert b"Claudio" in written
-    # Fallback uses plain ASCII -- no high-bit chars
-    assert all(b < 128 for b in written)
+    # The non-cp1252 glyph must NOT appear; the ASCII fallback is `*`.
+    assert "✻".encode("utf-8") not in written
+    assert b"*" in written
 
 
 # ---- _history_file ------------------------------------------------------
@@ -238,5 +465,69 @@ def test_completer_descends_into_subdir(tmp_path, monkeypatch):
 def test_completer_no_match_outside_at_token(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "main.py").write_text("x")
-    # No @ in the text -> no completions
+    # No @ in the text -> no completions from the @ completer
     assert _completions_for("build -r main") == []
+
+
+# ---- iter_command_completions ------------------------------------------
+
+def _cmd_completions_for(text: str) -> list[str]:
+    from claudio.repl import iter_command_completions
+    return [entry[0] for entry in iter_command_completions(text)]
+
+
+def test_command_completer_top_level_commands_at_line_start():
+    results = _cmd_completions_for("bu")
+    assert "build" in results
+    # Other commands shouldn't match the "bu" prefix
+    assert "ask" not in results
+
+
+def test_command_completer_offers_all_commands_for_empty_line():
+    results = _cmd_completions_for("")
+    assert "build" in results
+    assert "ask" in results
+    assert "run" in results
+    assert "stats" in results
+
+
+def test_command_completer_slash_commands():
+    results = _cmd_completions_for("/he")
+    assert "/help" in results
+    assert "/model" not in results
+
+
+def test_command_completer_slash_root_lists_all():
+    results = _cmd_completions_for("/")
+    assert "/help" in results
+    assert "/model" in results
+    assert "/exit" in results
+
+
+def test_command_completer_model_names_after_slash_model():
+    results = _cmd_completions_for("/model ha")
+    assert results == ["haiku"]
+
+
+def test_command_completer_modes_after_command():
+    results = _cmd_completions_for("build -r")
+    # -r and -refactor both start with "-r"
+    assert "-r" in results
+    assert "-refactor" in results
+    # Build modes shouldn't appear under ask
+    ask_results = _cmd_completions_for("ask -r")
+    assert "-refactor" not in ask_results
+    assert "-rv" in ask_results
+    assert "-review" in ask_results
+
+
+def test_command_completer_no_completions_for_unknown_command():
+    assert _cmd_completions_for("frobnicate -r") == []
+
+
+def test_command_completer_quiet_inside_argument_text():
+    # Mid-line typing of a non-flag, non-@ argument should not pop noisy
+    # completions for the file path the user is constructing.
+    assert _cmd_completions_for("ask -q how does") == []
+
+

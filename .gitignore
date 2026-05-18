@@ -4,9 +4,9 @@ __pycache__/
 dist/
 build/
 *.egg
-.venv/
-venv/
+.venv
+venv
 .tox/
-
-# Claudio local cache
+.pytest_cache
 .claudio/
+.claude/

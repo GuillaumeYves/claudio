@@ -139,25 +139,46 @@ def main(argv: list[str] | None = None) -> int:
     command = argv[0]
     rest, ctx = _pop_global_flags(argv[1:])
 
+    # Refresh the PyPI version cache opportunistically. Daemon thread, no-op
+    # if the cache is already fresh or if the user opted out.
+    from claudio.utils.update_check import start_background_check
+    start_background_check()
+
     if command == "build":
         from claudio.commands.build import execute
-        return execute(rest, ctx)
+        rc = execute(rest, ctx)
     elif command == "ask":
         from claudio.commands.ask import execute
-        return execute(rest, ctx)
+        rc = execute(rest, ctx)
     elif command == "run":
         from claudio.commands.run import execute
-        return execute(rest, ctx)
+        rc = execute(rest, ctx)
     elif command == "stats":
         from claudio.commands.stats import execute
-        return execute(rest, ctx)
+        rc = execute(rest, ctx)
     elif command == "setup":
         from claudio.commands.setup import execute
-        return execute(rest, ctx)
+        rc = execute(rest, ctx)
     else:
         print(f"Unknown command: {command}\n", file=sys.stderr)
         print(USAGE, file=sys.stderr)
         return 1
+
+    # Trailing pip-style notice. Suppressed in --json mode so machine-parsed
+    # output stays clean.
+    if not ctx.get("json_output"):
+        _maybe_print_update_notice()
+    return rc
+
+
+def _maybe_print_update_notice() -> None:
+    from claudio.utils.update_check import pending_notice
+    notice = pending_notice(stream=sys.stderr)
+    if notice:
+        try:
+            print("\n" + notice, file=sys.stderr)
+        except (UnicodeEncodeError, OSError):
+            pass
 
 
 def _output_completions(shell: str) -> int:

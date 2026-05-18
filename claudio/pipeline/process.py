@@ -3,6 +3,8 @@
 from claudio.pipeline.filter import filter_noise
 from claudio.pipeline.compress import compress_code, compress_logs
 from claudio.pipeline.prompt import build_prompt
+from claudio.utils.git_context import discover_git_changes
+from claudio.utils.project_context import discover_project_preamble
 from claudio.utils.tokens import estimate_tokens, is_code_file
 
 
@@ -51,8 +53,10 @@ def process(
     )
 
     # Stage 2: Compress
+    # Passing `task` lets the compressor keep the body of any symbol the
+    # user names verbatim instead of leaving Claude with just a line number.
     if is_code or _looks_like_code(filtered):
-        compressed = compress_code(filtered, filename)
+        compressed = compress_code(filtered, filename, task_text=task)
     elif _looks_like_logs(filtered):
         compressed = compress_logs(filtered)
     else:
@@ -61,6 +65,14 @@ def process(
     compressed_tokens = estimate_tokens(compressed, is_code)
 
     # Stage 3: Build prompt (XML tags, no duplication)
+    # Discover the project preamble (CLAUDE.md + .claudio/project.md +
+    # auto-detected stack) so codebase context lands in the cacheable prefix.
+    preamble = discover_project_preamble()
+
+    # For behavior-focused intents in a git repo, auto-include the diff
+    # of work-in-progress. Usually the single most relevant context.
+    git_changes = discover_git_changes(intent=intent)
+
     prompt = build_prompt(
         task=task,
         context=compressed,
@@ -68,6 +80,8 @@ def process(
         output_format=output_format,
         intent=intent,
         allow_context_request=allow_context_request,
+        project_preamble=preamble,
+        git_changes=git_changes,
     )
 
     final_tokens = estimate_tokens(prompt, is_code=False)

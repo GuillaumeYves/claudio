@@ -31,6 +31,11 @@ class FileAttachment:
     path: str
     lines: str | None = None
     content: str = ""
+    # Set to True by commands/build|ask|run when claudio.session_files reports
+    # that Claude has already seen this exact (path, lines, hash) tuple in
+    # the current session. format_file_context emits a compact marker instead
+    # of re-sending the full body.
+    unchanged: bool = False
 
 
 @dataclass
@@ -165,13 +170,32 @@ def format_file_context(files: list[FileAttachment]) -> str:
 
     Uses <file> tags instead of markdown fences -- saves ~10 tokens per file
     and matches the format Claude parses natively for tool results.
+
+    Each tag carries a role attribute: the first attachment is the
+    `target` (what the task is about) and the rest are `context`
+    (reference material). This lets Claude direct attention without
+    guessing from filenames.
+
+    Files marked `unchanged=True` (Claude has them from a prior turn in this
+    session, per claudio.session_files) collapse to a self-closing marker
+    so we don't pay for retransmitting bytes Claude already has.
     """
     if not files:
         return ""
     parts = []
+    role_assigned = False
     for fa in files:
         if not fa.content:
             continue
+        role = "target" if not role_assigned else "context"
+        role_assigned = True
         lines_attr = f' lines="{fa.lines}"' if fa.lines else ""
-        parts.append(f'<file path="{fa.path}"{lines_attr}>\n{fa.content}\n</file>')
+        if fa.unchanged:
+            parts.append(
+                f'<file path="{fa.path}" role="{role}"{lines_attr} unchanged="true"/>'
+            )
+        else:
+            parts.append(
+                f'<file path="{fa.path}" role="{role}"{lines_attr}>\n{fa.content}\n</file>'
+            )
     return "\n".join(parts)

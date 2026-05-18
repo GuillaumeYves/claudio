@@ -9,8 +9,14 @@ Usage:
     claudio build -generate @models/user.py "REST endpoint for users"
 """
 
+from claudio import session_files
 from claudio.pipeline.process import process
-from claudio.commands.run_prompt import execute_with_tracking, parse_need_context
+from claudio.commands.run_prompt import (
+    collect_clarification_answer,
+    execute_with_tracking,
+    parse_need_clarification,
+    parse_need_context,
+)
 from claudio.utils.args import (
     parse_command_args,
     resolve_file_attachments,
@@ -26,28 +32,42 @@ BUILD_MODES = {
     "g": "generate",
 }
 
+# Mode constraints are deliberately terse. Two recurring rules pay off in
+# every mode and are appended automatically below:
+#   - "No preamble" — kills "Sure, here's...", "I'll help you...", etc.
+#   - "Stop after the artifact" — no trailing summary / restatement of what
+#     was changed. The user can `ask -q` for elaboration; in REPL auto-chain
+#     mode that follow-up is essentially free.
 MODE_CONFIG = {
     "refactor": {
         "intent": "refactor",
         "constraints": [
             "Preserve behavior",
-            "Output unified diff",
-            "One-line reason per change",
+            "Output unified diff only",
+            "<=1 line reason inline per hunk as a `# why:` comment",
         ],
-        "output_format": "diff with explanation",
+        "output_format": "unified diff, no surrounding prose",
         "task_prefix": "Refactor",
     },
     "generate": {
         "intent": "generate",
         "constraints": [
-            "Production-ready",
+            "Production-ready code only",
             "Match conventions in context",
             "Minimal imports",
         ],
-        "output_format": "complete code block",
+        "output_format": "single fenced code block, no surrounding prose",
         "task_prefix": "Generate",
     },
 }
+
+# Universal terseness rules — applied to every build mode.
+_TERSE_RULES = ["No preamble", "Stop after the artifact"]
+
+
+def _with_terseness(constraints: list[str] | None) -> list[str]:
+    base = list(constraints) if constraints else []
+    return base + _TERSE_RULES
 
 
 def execute(raw_args: list[str], ctx: dict) -> int:
@@ -91,13 +111,35 @@ def execute(raw_args: list[str], ctx: dict) -> int:
         allow_feedback=allow_feedback,
     )
 
+    # Two-way feedback signals (gated by --feedback). Mutually exclusive:
+    #   <need-clarification>  task is ambiguous -> ask the dev
+    #   <need-context>        data is missing   -> expand file ranges
     if allow_feedback and response:
-        need = parse_need_context(response)
-        if need:
-            path, lines, reason = need
-            if _expand_file_range(parsed.files, path, lines):
-                out.info(f"[claudio] Claude requested more context: {path} lines {lines}"
-                         f"{' — ' + reason if reason else ''}. Retrying.")
+        question = parse_need_clarification(response)
+        if question:
+            answer = collect_clarification_answer(question, out)
+            if answer:
+                enriched_task = f"{task}\n\n[clarification] {question}\n[answer] {answer}"
+                _process_and_execute(
+                    files=parsed.files,
+                    task=enriched_task,
+                    mode=parsed.mode,
+                    config=config,
+                    ctx={**ctx, "no_cache": True},
+                    out=out,
+                    allow_feedback=False,
+                )
+            return 0
+
+        needs = parse_need_context(response)
+        if needs:
+            expanded = []
+            for path, lines, reason in needs:
+                if _expand_file_range(parsed.files, path, lines):
+                    expanded.append(f"{path} lines {lines}" + (f" — {reason}" if reason else ""))
+            if expanded:
+                out.info("[claudio] Claude requested more context: "
+                         + "; ".join(expanded) + ". Retrying.")
                 _process_and_execute(
                     files=parsed.files,
                     task=task,
@@ -112,6 +154,16 @@ def execute(raw_args: list[str], ctx: dict) -> int:
 
 
 def _process_and_execute(files, task, mode, config, ctx, out, allow_feedback):
+    # Mark which files Claude has already seen this session so we can swap
+    # in a compact <file unchanged="true"/> marker instead of re-sending
+    # the full body. Uses --session-id or --resume from ctx as the key.
+    session_id = ctx.get("session_id") or ctx.get("resume")
+    if files and session_id:
+        unchanged = session_files.mark_files_seen(session_id, files)
+        for fa in files:
+            if (fa.path, fa.lines) in unchanged:
+                fa.unchanged = True
+
     file_context = format_file_context(files)
 
     result = process(
@@ -119,7 +171,7 @@ def _process_and_execute(files, task, mode, config, ctx, out, allow_feedback):
         task=task,
         intent=config["intent"],
         filename=files[0].path if files else "",
-        constraints=config["constraints"],
+        constraints=_with_terseness(config["constraints"]),
         output_format=config["output_format"],
         allow_context_request=allow_feedback,
     )

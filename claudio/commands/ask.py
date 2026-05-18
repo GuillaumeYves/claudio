@@ -11,8 +11,14 @@ Usage:
     claudio ask -debug @server.log -100-200 "why is it timing out"
 """
 
+from claudio import session_files
 from claudio.pipeline.process import process
-from claudio.commands.run_prompt import execute_with_tracking, parse_need_context
+from claudio.commands.run_prompt import (
+    collect_clarification_answer,
+    execute_with_tracking,
+    parse_need_clarification,
+    parse_need_context,
+)
 from claudio.utils.args import (
     parse_command_args,
     resolve_file_attachments,
@@ -34,14 +40,15 @@ MODE_CONFIG = {
     "review": {
         "intent": "review",
         "constraints": [
-            "Flag bugs, security, code smells",
-            "Rank by severity",
-            "Give fixes",
+            "One issue per bullet, <=2 lines: `[severity] file:line - issue -> fix`",
+            "Ranked highest severity first",
+            "Skip nits unless asked",
         ],
-        "output_format": "[severity] issue + fix, then one-line verdict",
+        "output_format": "bullets only; one-line verdict at the end",
         "task_prefix": "Review",
     },
     "question": {
+        # Exploratory mode — no constraints. Free-form answers are the point.
         "intent": "general",
         "constraints": None,
         "output_format": None,
@@ -50,14 +57,26 @@ MODE_CONFIG = {
     "debug": {
         "intent": "debug",
         "constraints": [
-            "Root cause first",
-            "Concrete fix",
-            "Rank if ambiguous",
+            "Cause: <=1 sentence",
+            "Fix: minimal diff",
+            "Why: <=2 sentences",
         ],
-        "output_format": "root cause, fix (diff), explanation",
+        "output_format": "three labeled blocks: Cause / Fix / Why",
         "task_prefix": "Debug",
     },
 }
+
+# Terseness rules added to every mode except `question`, which is meant to
+# be expansive. -question users want explanations; -review and -debug users
+# want artifacts.
+_TERSE_RULES = ["No preamble", "Stop after the artifact"]
+
+
+def _with_terseness(intent: str, constraints: list[str] | None) -> list[str] | None:
+    if intent == "general":
+        return constraints  # leave -question alone
+    base = list(constraints) if constraints else []
+    return base + _TERSE_RULES
 
 
 def execute(raw_args: list[str], ctx: dict) -> int:
@@ -106,15 +125,35 @@ def execute(raw_args: list[str], ctx: dict) -> int:
         allow_feedback=allow_feedback,
     )
 
-    # Auto-retry on <need-context>: expand the requested file range and re-run
-    # once with the richer context (no second retry to avoid loops).
+    # Two-way feedback signals (gated by --feedback). Mutually exclusive:
+    #   <need-clarification>  task is ambiguous -> ask the dev
+    #   <need-context>        data is missing   -> expand file ranges
+    # Both honor a single retry; no loops.
     if allow_feedback and response:
-        need = parse_need_context(response)
-        if need:
-            path, lines, reason = need
-            if _expand_file_range(parsed.files, path, lines):
-                out.info(f"[claudio] Claude requested more context: {path} lines {lines}"
-                         f"{' — ' + reason if reason else ''}. Retrying.")
+        question = parse_need_clarification(response)
+        if question:
+            answer = collect_clarification_answer(question, out)
+            if answer:
+                enriched_task = f"{task}\n\n[clarification] {question}\n[answer] {answer}"
+                _process_and_execute(
+                    files=parsed.files,
+                    task=enriched_task,
+                    config=config,
+                    ctx={**ctx, "no_cache": True},
+                    out=out,
+                    allow_feedback=False,
+                )
+            return 0
+
+        needs = parse_need_context(response)
+        if needs:
+            expanded = []
+            for path, lines, reason in needs:
+                if _expand_file_range(parsed.files, path, lines):
+                    expanded.append(f"{path} lines {lines}" + (f" — {reason}" if reason else ""))
+            if expanded:
+                out.info("[claudio] Claude requested more context: "
+                         + "; ".join(expanded) + ". Retrying.")
                 _process_and_execute(
                     files=parsed.files,
                     task=task,
@@ -129,6 +168,15 @@ def execute(raw_args: list[str], ctx: dict) -> int:
 
 def _process_and_execute(files, task, config, ctx, out, allow_feedback):
     """Single process+execute pass. Extracted so retry can call it again."""
+    # Per-session file dedup — Claude already has unchanged @files from
+    # prior turns; substitute a marker instead of re-sending bytes.
+    session_id = ctx.get("session_id") or ctx.get("resume")
+    if files and session_id:
+        unchanged = session_files.mark_files_seen(session_id, files)
+        for fa in files:
+            if (fa.path, fa.lines) in unchanged:
+                fa.unchanged = True
+
     file_context = format_file_context(files)
 
     result = process(
@@ -136,7 +184,7 @@ def _process_and_execute(files, task, config, ctx, out, allow_feedback):
         task=task,
         intent=config["intent"],
         filename=files[0].path if files else "",
-        constraints=config["constraints"],
+        constraints=_with_terseness(config["intent"], config["constraints"]),
         output_format=config["output_format"],
         allow_context_request=allow_feedback,
     )

@@ -28,9 +28,3 @@ def load_config() -> dict:
             pass
 
     return config
-
-
-def save_config(config: dict) -> None:
-    """Save config to disk."""
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    CONFIG_FILE.write_text(json.dumps(config, indent=2))

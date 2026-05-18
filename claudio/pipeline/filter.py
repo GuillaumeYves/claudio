@@ -6,7 +6,9 @@ and targets content that is never useful to Claude regardless of intent:
   - License/copyright headers (legal boilerplate, not code)
   - Consecutive blank lines (visual spacing, no semantic value)
   - Log noise (health checks, separators, duplicates)
-  - Comment blocks when intent is behavior-focused (refactor/review/debug)
+  - Comment blocks + docstrings when intent is `refactor` (structure-only
+    task -- not stripped for review/debug, where comments often encode
+    intent or known issues that matter to the answer)
 """
 
 import re
@@ -71,11 +73,11 @@ def filter_code(text: str, intent: str = "") -> str:
       - Remove license/copyright headers
       - Remove shebang lines
 
-    When intent is refactor/review/debug (behavior-focused):
-      - Strip inline comments (# ... at end of line)
-      - Strip full-line comments (lines that are only comments)
-      - Strip docstrings (triple-quote blocks)
-      - Collapse resulting blank lines again
+    Comments and docstrings are stripped ONLY for `refactor`. They survive
+    for `review` (TODOs and intent docs are often the bug) and `debug`
+    (assertions in comments help locate failure modes). Removing them on
+    review meant Claude was being asked to spot bugs in code with
+    deliberately reduced signal -- exactly the wrong trade-off.
     """
     # Phase 1: Universal cleanup
     lines = text.splitlines()
@@ -88,9 +90,8 @@ def filter_code(text: str, intent: str = "") -> str:
     # Remove license/copyright header block (common at top of file)
     lines = _strip_license_header(lines)
 
-    # Phase 2: Intent-based comment stripping
-    behavior_intents = {"refactor", "review", "debug"}
-    if intent in behavior_intents:
+    # Phase 2: Intent-based comment stripping (refactor only)
+    if intent == "refactor":
         lines = _strip_comments(lines)
         lines = _strip_docstrings(lines)
 

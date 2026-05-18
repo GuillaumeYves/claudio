@@ -23,6 +23,7 @@ import json
 import sys
 from pathlib import Path
 
+from claudio import session_files
 from claudio.pipeline.process import process
 from claudio.commands.run_prompt import execute_with_tracking
 from claudio.utils.tokens import estimate_tokens, format_token_info
@@ -104,6 +105,15 @@ def execute(raw_args: list[str], ctx: dict) -> int:
         for err in file_errors:
             out.error(err)
             return 1
+        # In a serial plan with auto-chain, the same @file appears in every
+        # task's context. Mark unchanged ones so format_file_context emits
+        # the compact marker from task 2 onwards.
+        session_id = ctx.get("session_id") or ctx.get("resume")
+        if session_id:
+            unchanged = session_files.mark_files_seen(session_id, parsed.files)
+            for fa in parsed.files:
+                if (fa.path, fa.lines) in unchanged:
+                    fa.unchanged = True
         extra_context = format_file_context(parsed.files)
 
     # Show plan summary and confirm

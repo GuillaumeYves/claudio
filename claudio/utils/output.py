@@ -1,7 +1,19 @@
-"""Output formatting for CLI results."""
+"""Output formatting for CLI results.
+
+`Output.result()` renders the response through the markdown -> ANSI
+converter on a colour-capable TTY (headers, bold, code spans, fences,
+lists, blockquotes). On `--json` mode or piped stdout the content is
+emitted verbatim so machine parsers see what they expect.
+
+`info` / `success` / `warn` / `error` write labelled, colour-tagged
+messages to stderr so the response on stdout stays clean for piping.
+"""
 
 import json
 import sys
+
+from claudio.utils.colors import CYAN, GREEN, RED, YELLOW, colored
+from claudio.utils.markdown import render as render_markdown
 
 
 class Output:
@@ -12,7 +24,13 @@ class Output:
         self.verbose = verbose
 
     def result(self, content: str, metadata: dict | None = None) -> None:
-        """Print the main result."""
+        """Print the main result.
+
+        In TTY mode the response is rendered through the markdown -> ANSI
+        converter so bold/headers/code spans show as styled text instead
+        of raw asterisks. In JSON mode or piped output, content is emitted
+        verbatim so machine parsers see what they expect.
+        """
         if self.json_mode:
             payload = {"result": content}
             if metadata:
@@ -21,24 +39,33 @@ class Output:
         else:
             if self.verbose and metadata:
                 self._print_metadata(metadata)
-            # Handle Windows encoding issues gracefully
+            rendered = render_markdown(content, stream=sys.stdout)
             try:
-                print(content)
+                print(rendered)
             except UnicodeEncodeError:
-                print(content.encode("utf-8", errors="replace").decode("ascii", errors="replace"))
+                print(rendered.encode("utf-8", errors="replace").decode("ascii", errors="replace"))
 
     def info(self, message: str) -> None:
         """Print an informational message to stderr."""
         if not self.json_mode:
-            print(f"[claudio] {message}", file=sys.stderr)
+            label = colored("[claudio]", CYAN, stream=sys.stderr)
+            print(f"{label} {message}", file=sys.stderr)
+
+    def success(self, message: str) -> None:
+        """Print a success message to stderr."""
+        if not self.json_mode:
+            label = colored("[claudio]", GREEN, stream=sys.stderr, bold=True)
+            print(f"{label} {message}", file=sys.stderr)
 
     def warn(self, message: str) -> None:
         """Print a warning to stderr."""
-        print(f"[claudio:warn] {message}", file=sys.stderr)
+        label = colored("[claudio:warn]", YELLOW, stream=sys.stderr, bold=True)
+        print(f"{label} {message}", file=sys.stderr)
 
     def error(self, message: str) -> None:
         """Print an error to stderr."""
-        print(f"[claudio:error] {message}", file=sys.stderr)
+        label = colored("[claudio:error]", RED, stream=sys.stderr, bold=True)
+        print(f"{label} {message}", file=sys.stderr)
 
     def _print_metadata(self, metadata: dict) -> None:
         for key, value in metadata.items():
