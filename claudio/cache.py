@@ -20,6 +20,26 @@ from pathlib import Path
 CACHE_DIR = Path(".claudio") / "cache"
 DEFAULT_TTL = 3600  # 1 hour
 
+# Tracks whether the most recent cache_get returned a hit. The REPL reads
+# this after each dispatch to decide whether session_turn should advance:
+# a cached response means Claude was never actually called, so the next
+# turn must still use --session-id (not --resume) or Claude will reject
+# the conversation as unknown. Module-level state is the lightest plumbing
+# across the long `repl → cli → command → run_prompt → cache` call chain.
+_last_was_hit = False
+
+
+def consume_last_hit() -> bool:
+    """Return whether the last cache_get returned a hit, then reset.
+
+    Read-and-clear semantics so a single hit signal can't be observed by
+    more than one caller. The REPL is the intended consumer.
+    """
+    global _last_was_hit
+    was_hit = _last_was_hit
+    _last_was_hit = False
+    return was_hit
+
 
 def cache_key(prompt: str) -> str:
     """Generate a deterministic cache key from a prompt."""
@@ -29,8 +49,13 @@ def cache_key(prompt: str) -> str:
 def cache_get(prompt: str, ttl: int = DEFAULT_TTL) -> str | None:
     """Look up a cached response for a prompt.
 
-    Returns the cached response string, or None on miss/expiry.
+    Returns the cached response string, or None on miss/expiry. Sets the
+    module-level `_last_was_hit` flag so callers further up the chain
+    (REPL) can detect cache hits without changing the return type.
     """
+    global _last_was_hit
+    _last_was_hit = False  # default: miss
+
     key = cache_key(prompt)
     path = CACHE_DIR / f"{key}.json"
 
@@ -52,11 +77,16 @@ def cache_get(prompt: str, ttl: int = DEFAULT_TTL) -> str | None:
             pass
         return None
 
-    return data.get("response")
+    response = data.get("response")
+    if response is not None:
+        _last_was_hit = True
+    return response
 
 
 def cache_put(prompt: str, response: str, input_tokens: int = 0) -> None:
     """Store a response in the cache."""
+    global _last_was_hit
+    _last_was_hit = False  # real call, not a hit
     _ensure_cache_dir()
 
     key = cache_key(prompt)

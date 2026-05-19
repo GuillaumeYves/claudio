@@ -13,7 +13,11 @@ import json
 import sys
 
 from claudio.utils.colors import CYAN, GREEN, RED, YELLOW, colored
-from claudio.utils.markdown import render as render_markdown
+from claudio.utils.markdown import (
+    _term_width,
+    _wrap_with_indent,
+    render as render_markdown,
+)
 
 
 class Output:
@@ -27,8 +31,9 @@ class Output:
         """Print the main result.
 
         In TTY mode the response is rendered through the markdown -> ANSI
-        converter so bold/headers/code spans show as styled text instead
-        of raw asterisks. In JSON mode or piped output, content is emitted
+        converter (bold/headers/code spans become styled text) and each
+        line is left-padded so the answer visually stands apart from the
+        user's prompt. In JSON mode or piped output, content is emitted
         verbatim so machine parsers see what they expect.
         """
         if self.json_mode:
@@ -40,6 +45,15 @@ class Output:
             if self.verbose and metadata:
                 self._print_metadata(metadata)
             rendered = render_markdown(content, stream=sys.stdout)
+            # Wrap-aware indent: each *visual* row carries the 2-space
+            # gutter, including soft-wrapped continuations. Only kicks in
+            # when we styled (TTY); piped output stays flush left.
+            if rendered is not content:
+                width = _term_width()
+                wrapped_rows: list[str] = []
+                for line in rendered.splitlines():
+                    wrapped_rows.extend(_wrap_with_indent(line, width, "  "))
+                rendered = "\n".join(wrapped_rows)
             try:
                 print(rendered)
             except UnicodeEncodeError:
@@ -63,9 +77,16 @@ class Output:
         print(f"{label} {message}", file=sys.stderr)
 
     def error(self, message: str) -> None:
-        """Print an error to stderr."""
+        """Print an error to stderr -- entire line in red.
+
+        The label `[claudio:error]` is bold red and the message after it is
+        also red (not the default fg) so the whole line reads as one error
+        block at a glance. Previously only the label was coloured, which
+        let long error messages blend into surrounding output.
+        """
         label = colored("[claudio:error]", RED, stream=sys.stderr, bold=True)
-        print(f"{label} {message}", file=sys.stderr)
+        body = colored(message, RED, stream=sys.stderr)
+        print(f"{label} {body}", file=sys.stderr)
 
     def _print_metadata(self, metadata: dict) -> None:
         for key, value in metadata.items():

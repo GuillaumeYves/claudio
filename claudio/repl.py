@@ -26,7 +26,7 @@ from pathlib import Path
 
 from claudio import __version__, session_files
 from claudio.utils.colors import (
-    BOLD, CYAN, DIM, GREY, RESET, colors_enabled,
+    BOLD, CLAUDIO_BLUE, DIM, GREY, RESET, colors_enabled,
 )
 from claudio.utils.update_check import pending_notice, start_background_check
 
@@ -534,8 +534,9 @@ def main(argv: list[str] | None = None) -> int:
         if used_default and not sticky_hint_shown:
             print(
                 "[claudio:hint] No mode set — defaulting to `ask -question`. "
-                "Pin a mode with `ask -review`, `build -r`, `ask -debug`, etc. "
-                "so future bare prompts inherit the right intent.",
+                "Pin a mode with `ask -review`, `build -r`, `ask -debug`, etc., "
+                "or use `/mode CMD MODE` (e.g. `/mode ask -review`) so future "
+                "bare prompts inherit the right intent.",
                 file=sys.stderr,
             )
             sticky_hint_shown = True
@@ -553,11 +554,27 @@ def main(argv: list[str] | None = None) -> int:
             sticky_files = new_files
 
         argv = _augment_argv(argv, session_model, session_id, session_turn)
+        # Vertical breathing room *before* the response: a blank line
+        # separates the user's submitted prompt from claudio's reply, so
+        # the conversation reads as visually paced turns rather than a
+        # continuous wall of text. Paired with the post-response newline
+        # below for symmetric spacing.
+        sys.stdout.write("\n")
+        sys.stdout.flush()
         _dispatch(argv)
-        # Successful or not, the session is now "in flight" — claude allocates
-        # the session on first invocation, so subsequent turns should --resume
-        # rather than --session-id (which would conflict).
-        session_turn += 1
+        # Extra vertical space so the next prompt has visual room to
+        # breathe — the response and the new turn don't run together.
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        # Only advance session_turn if Claude was actually called. A cache
+        # hit returns the stored response without ever talking to Claude,
+        # so the session ID was never created on Claude's side -- using
+        # --resume next turn would fail with "No conversation found".
+        # Staying at session_turn=0 keeps the first real call as a
+        # --session-id create.
+        from claudio.cache import consume_last_hit
+        if not consume_last_hit():
+            session_turn += 1
 
     return 0
 
@@ -565,9 +582,9 @@ def main(argv: list[str] | None = None) -> int:
 def _render_prompt(sticky_mode: tuple[str, str] | None) -> str:
     """Build the ANSI prompt string showing the current sticky mode."""
     if sticky_mode is None:
-        return f"{CYAN}claudio>{RESET} "
+        return f"{CLAUDIO_BLUE}claudio>{RESET} "
     cmd, mode_flag = sticky_mode
-    return f"{CYAN}claudio{RESET} {GREY}[{cmd} {mode_flag}]{RESET}{CYAN}>{RESET} "
+    return f"{CLAUDIO_BLUE}claudio{RESET} {GREY}[{cmd} {mode_flag}]{RESET}{CLAUDIO_BLUE}>{RESET} "
 
 
 def _augment_argv(
@@ -830,12 +847,12 @@ def _print_banner() -> None:
     parts: list[str] = [""]  # leading blank line
 
     # Logo block (only when the encoding can carry the block chars).
-    # Uses plain CYAN — same shade as the ✻ glyph below and the `claudio>`
-    # prompt — so the whole tool reads as one consistent colour palette.
+    # Uses CLAUDIO_BLUE — same shade as the ✻ glyph below and the
+    # `claudio>` prompt — so the whole tool reads as one brand palette.
     if can_unicode:
         if use_color:
             for row in _LOGO_LINES:
-                parts.append(f"  {CYAN}{row}{RESET}")
+                parts.append(f"  {CLAUDIO_BLUE}{row}{RESET}")
         else:
             for row in _LOGO_LINES:
                 parts.append(f"  {row}")
@@ -844,7 +861,7 @@ def _print_banner() -> None:
     # Title line: glyph + product + dim version.
     if use_color:
         title = (
-            f"  {CYAN}{glyph}{RESET} {BOLD}Claudio{RESET} "
+            f"  {CLAUDIO_BLUE}{glyph}{RESET} {BOLD}Claudio{RESET} "
             f"{DIM}v{__version__}{RESET}"
         )
     else:

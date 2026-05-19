@@ -22,6 +22,21 @@ YELLOW = "\x1b[33m"
 CYAN = "\x1b[36m"
 GREY = "\x1b[90m"
 
+# Subtle 256-colour backgrounds for diff rows (removed/added). Dark enough
+# to read as a tinted block on both light and dark terminal themes
+# without overwhelming the foreground colour. Used by markdown.py for
+# `-` and `+` lines inside code fences.
+RED_BG = "\x1b[48;5;52m"
+GREEN_BG = "\x1b[48;5;22m"
+
+# The single brand colour for claudio: the prompt, the logo, the spinner
+# glyph, markdown headers, list bullets and numbers, and tool-activity
+# breadcrumbs all use this constant. Same byte value as CYAN — terminals
+# render \x1b[36m as a blue-leaning shade most users read as "blue", so
+# we expose it under a brand-facing name to avoid the cyan/blue confusion
+# in code reviews. Change here = change everywhere.
+CLAUDIO_BLUE = CYAN
+
 
 def colors_enabled(stream=None) -> bool:
     """Should we emit ANSI codes for `stream` (default sys.stderr)?"""

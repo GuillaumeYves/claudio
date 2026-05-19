@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import itertools
 import sys
 import threading
 import time
@@ -14,6 +13,12 @@ from claudio.utils.colors import CYAN, DIM, RESET, colors_enabled
 # in monospaced terminals. Two-character ASCII fallback for legacy consoles.
 _FRAMES_UNICODE = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 _FRAMES_ASCII = "|/-\\"
+
+# Three-dot frames used while a tool is running. The active dot is `●`,
+# the others are `·` — easier to read at-a-glance as "thinking dots"
+# than a rotating braille glyph for callers unfamiliar with that style.
+_DOT_FRAMES_UNICODE = ("●·· ", "·●· ", "··● ", "·●· ")
+_DOT_FRAMES_ASCII = ("*.. ", ".*. ", "..* ", ".*. ")
 
 
 class Spinner:
@@ -28,6 +33,10 @@ class Spinner:
         self.stream = stream if stream is not None else sys.stderr
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        # "default" (braille spin) or "dots" (3-dot cycling). The streaming
+        # executor flips to "dots" when a tool_use event fires so the user
+        # reads it clearly as "claudio is doing something, not frozen".
+        self._frame_mode = "default"
 
     def __enter__(self) -> "Spinner":
         self.start()
@@ -46,22 +55,35 @@ class Spinner:
         """Swap the displayed message mid-spin (e.g. on retry)."""
         self.message = message
 
-    def _pick_frames(self) -> str:
+    def use_dots(self) -> None:
+        """Switch to the three-dot tool-activity animation."""
+        self._frame_mode = "dots"
+
+    def use_default(self) -> None:
+        """Revert to the standard spinner frames."""
+        self._frame_mode = "default"
+
+    def _pick_frames(self) -> tuple[str, ...] | str:
         # cp1252 (legacy Windows consoles) cannot render braille — sniff
         # the stream encoding and fall back to ASCII frames if needed.
         encoding = getattr(self.stream, "encoding", None) or ""
-        if encoding.lower().startswith(("utf", "cp65001")):
-            return _FRAMES_UNICODE
-        return _FRAMES_ASCII
+        utf_ok = encoding.lower().startswith(("utf", "cp65001"))
+        if self._frame_mode == "dots":
+            return _DOT_FRAMES_UNICODE if utf_ok else _DOT_FRAMES_ASCII
+        return _FRAMES_UNICODE if utf_ok else _FRAMES_ASCII
 
     def _run(self) -> None:
-        frames = itertools.cycle(self._pick_frames())
         start = time.monotonic()
         last_len = 0
         use_color = colors_enabled(self.stream)
+        tick = 0
         while not self._stop.is_set():
             elapsed = time.monotonic() - start
-            frame = next(frames)
+            # Re-pick each tick so use_dots() / use_default() take effect
+            # immediately rather than waiting for restart.
+            current_frames = self._pick_frames()
+            frame = current_frames[tick % len(current_frames)]
+            tick += 1
             if use_color:
                 line = (
                     f"\r{CYAN}{frame}{RESET} {self.message} "

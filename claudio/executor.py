@@ -31,12 +31,36 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 
 from claudio.config import load_config
-from claudio.utils.colors import DIM, RESET, colors_enabled
+from claudio.utils.colors import (
+    BOLD, CLAUDIO_BLUE, DIM, GREEN, RED, RESET, colors_enabled,
+)
 from claudio.utils.markdown import MarkdownStream
 from claudio.utils.spinner import Spinner
+
+
+def _print_error(message: str) -> None:
+    """Write an [claudio:error] line to stderr with the full message in red.
+
+    Matches the styling used by `claudio.utils.output.Output.error()`:
+    bold-red label, red body, so the whole line reads as one error block
+    instead of a coloured prefix followed by a default-colour message that
+    blends into surrounding output.
+    """
+    if colors_enabled(sys.stderr):
+        prefix = f"{BOLD}{RED}[claudio:error]{RESET}"
+        body = f"{RED}{message}{RESET}"
+        line = f"{prefix} {body}"
+    else:
+        line = f"[claudio:error] {message}"
+    try:
+        sys.stderr.write(line + "\n")
+        sys.stderr.flush()
+    except (OSError, UnicodeEncodeError):
+        pass
 
 
 # stderr / exit signatures we treat as transient and worth retrying.
@@ -145,10 +169,9 @@ def execute_prompt(
     """
     claude_bin = find_claude_cli()
     if not claude_bin:
-        print(
-            "[claudio:error] Claude CLI not found. Install it from https://claude.ai/code\n"
-            "In the meantime, use --dry-run to see the optimized prompt.",
-            file=sys.stderr,
+        _print_error(
+            "Claude CLI not found. Install it from https://claude.ai/code\n"
+            "                 In the meantime, use --dry-run to see the optimized prompt."
         )
         sys.exit(1)
 
@@ -219,10 +242,10 @@ def _execute_buffered(
                     spin.update(f"{spinner_label} (timed out — retry {attempt + 1}/{max_retries} in {delay:.0f}s)")
                     time.sleep(delay)
                     continue
-                print(f"[claudio:error] Claude CLI {last_error} after {max_retries + 1} attempts.", file=sys.stderr)
+                _print_error(f"Claude CLI {last_error} after {max_retries + 1} attempts.")
                 sys.exit(1)
             except FileNotFoundError:
-                print(f"[claudio:error] Could not execute: {claude_bin}", file=sys.stderr)
+                _print_error(f"Could not execute: {claude_bin}")
                 sys.exit(1)
 
             if result.returncode == 0:
@@ -247,12 +270,12 @@ def _execute_buffered(
                 continue
 
             if stderr:
-                print(f"[claudio:error] Claude CLI error: {stderr}", file=sys.stderr)
+                _print_error(f"Claude CLI error: {stderr}")
             else:
-                print(f"[claudio:error] Claude CLI exited with code {result.returncode}", file=sys.stderr)
+                _print_error(f"Claude CLI exited with code {result.returncode}")
             sys.exit(result.returncode or 1)
 
-    print(f"[claudio:error] Claude CLI failed after retries: {last_error}", file=sys.stderr)
+    _print_error(f"Claude CLI failed after retries: {last_error}")
     sys.exit(1)
 
 
@@ -282,7 +305,7 @@ def _execute_streaming(
                     cmd, prompt, timeout, spin, spinner_label
                 )
             except FileNotFoundError:
-                print(f"[claudio:error] Could not execute: {claude_bin}", file=sys.stderr)
+                _print_error(f"Could not execute: {claude_bin}")
                 sys.exit(1)
             except subprocess.TimeoutExpired:
                 last_error = f"timed out after {timeout}s"
@@ -291,7 +314,7 @@ def _execute_streaming(
                     spin.update(f"{spinner_label} (timed out — retry {attempt + 1}/{max_retries} in {delay:.0f}s)")
                     time.sleep(delay)
                     continue
-                print(f"[claudio:error] Claude CLI {last_error} after {max_retries + 1} attempts.", file=sys.stderr)
+                _print_error(f"Claude CLI {last_error} after {max_retries + 1} attempts.")
                 sys.exit(1)
 
             if rc == 0:
@@ -321,7 +344,7 @@ def _execute_streaming(
                 print(f"\n[claudio:error] Claude CLI exited with code {rc}", file=sys.stderr)
             sys.exit(rc or 1)
 
-    print(f"[claudio:error] Claude CLI failed after retries: {last_error}", file=sys.stderr)
+    _print_error(f"Claude CLI failed after retries: {last_error}")
     sys.exit(1)
 
 
@@ -359,11 +382,22 @@ def _stream_once(
     full_text: list[str] = []
     raw_buffer: list[str] = []
     saw_delta = False
+    saw_tool = False  # any tool_use event during this turn -> emit the handoff
     md_stream = MarkdownStream(out_stream=sys.stdout)
+    # Post-text tool tracking: the currently-animating breadcrumb (if any)
+    # plus a flag set whenever a tool fires after text has started, so we
+    # know to print the handoff line before text resumes.
+    active_breadcrumb: _BreadcrumbAnimator | None = None
+    post_text_tool_seen = False
 
     started = time.monotonic()
+    if proc.stdout is None:
+        # Defensive: subprocess.Popen with stdout=PIPE should always give
+        # us a readable handle, but `assert` is stripped under `python -O`
+        # so we use an explicit guard. Treat as a hard failure -- there's
+        # nothing meaningful to stream from a closed/missing pipe.
+        return 1, "", "stdout pipe is None", False
     try:
-        assert proc.stdout is not None
         for raw_line in proc.stdout:
             if timeout and (time.monotonic() - started) > timeout:
                 proc.terminate()
@@ -376,18 +410,43 @@ def _stream_once(
             if kind == "text" and payload:
                 if not saw_delta:
                     spinner.stop()
+                    # Pre-text handoff: any tools that fired before the
+                    # first delta land the "✓ claudio has enough context"
+                    # line here, on transition from gather → answer.
+                    if saw_tool:
+                        _emit_context_handoff()
                     saw_delta = True
+                else:
+                    # Mid-response handoff: if a tool ran after text had
+                    # already started (Claude paused to grab more context),
+                    # finalize the active breadcrumb and emit the same
+                    # marker before the answer continues.
+                    if active_breadcrumb is not None:
+                        active_breadcrumb.stop()
+                        active_breadcrumb = None
+                    if post_text_tool_seen:
+                        _emit_context_handoff()
+                        post_text_tool_seen = False
                 full_text.append(payload)
                 md_stream.feed(payload)
                 continue
 
             if kind == "tool" and payload:
-                # Pre-text: live status in the spinner.
-                # Post-text: persistent dim breadcrumb on stderr.
+                saw_tool = True
                 if not saw_delta:
+                    # Pre-text: reuse the main spinner with the three-dot
+                    # animation so "thinking" reads clearly.
+                    spinner.use_dots()
                     spinner.update(f"claudio is {payload}")
                 else:
-                    _emit_tool_breadcrumb(payload)
+                    # Post-text: each tool gets its own animated
+                    # breadcrumb. The previous one (if any) finalizes
+                    # into a static line so the activity log builds up.
+                    post_text_tool_seen = True
+                    if active_breadcrumb is not None:
+                        active_breadcrumb.stop()
+                    active_breadcrumb = _BreadcrumbAnimator(payload)
+                    active_breadcrumb.start()
                 continue
 
             if not kind:
@@ -398,12 +457,21 @@ def _stream_once(
 
         rc = proc.wait(timeout=10)
     except KeyboardInterrupt:
+        if active_breadcrumb is not None:
+            active_breadcrumb.stop()
+            active_breadcrumb = None
         proc.terminate()
         try:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             proc.kill()
         raise
+
+    # Stream ended (normal or error): make sure any in-flight breadcrumb
+    # gets committed so its line isn't left half-painted.
+    if active_breadcrumb is not None:
+        active_breadcrumb.stop()
+        active_breadcrumb = None
 
     md_stream.close()
 
@@ -440,21 +508,130 @@ def _stream_once(
     return rc, text, stderr, saw_delta
 
 
-def _emit_tool_breadcrumb(label: str) -> None:
-    """Write a dim 'claudio is X' line to stderr.
+class _BreadcrumbAnimator:
+    """Animated tool-activity breadcrumb on stderr (post-text path).
 
-    Used when a tool_use event arrives after streaming text has begun --
-    we can't reuse the spinner (it stopped on first delta), so a quiet
-    breadcrumb on stderr keeps the user informed without disturbing the
-    response flowing on stdout.
+    While a tool runs, this class repaints `↳ claudio is <label> .  /
+    ..  / ...  ` on a single stderr line using carriage return, so the
+    user can see something is alive between tool announcements. When
+    `stop()` is called (next tool starts, or text resumes), the dots are
+    cleared and the bare label is committed with a newline -- so the
+    breadcrumb persists as part of the activity log instead of vanishing.
+
+    On non-TTY stderr (piped, captured) the animation is skipped and the
+    static breadcrumb is written once. Same end result, no thread cost.
+
+    The label is truncated to fit the terminal width so long paths don't
+    overflow into wrapped rows that mangle the dot animation.
     """
-    use_color = colors_enabled(sys.stderr)
-    line = f"  ↳ claudio is {label}\n"
-    if use_color:
-        line = f"{DIM}{line.rstrip()}{RESET}\n"
+
+    _FRAMES = (".  ", ".. ", "...")
+    _TICK_SECONDS = 0.25
+    _PREFIX_OVERHEAD = len("  ↳ claudio is ") + len(" ...")  # gutter + dots
+
+    def __init__(self, label: str, stream=None):
+        self.stream = stream if stream is not None else sys.stderr
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._use_color = colors_enabled(self.stream)
+        self._is_tty = bool(getattr(self.stream, "isatty", lambda: False)())
+        self.label = _truncate_breadcrumb_label(label, self.stream)
+
+    def start(self) -> None:
+        if not self._is_tty:
+            self._commit_static()
+            return
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        """Commit the breadcrumb as a permanent line and end the animation."""
+        if not self._is_tty:
+            return  # static line already written by start()
+        if self._thread is None:
+            return
+        self._stop.set()
+        self._thread.join(timeout=0.6)
+        self._thread = None
+
+    def _styled(self, text: str) -> str:
+        # Breadcrumbs share the brand blue with the prompt + logo so the
+        # whole tool reads as one colour family. The arrow stays bold-ish
+        # via the blue itself rather than DIM grey (which read as "noise"
+        # instead of "claudio is doing something").
+        return f"{CLAUDIO_BLUE}{text}{RESET}" if self._use_color else text
+
+    def _commit_static(self) -> None:
+        """Non-TTY (or fallback) path: write the bare breadcrumb once + \\n."""
+        try:
+            self.stream.write(self._styled(f"  ↳ claudio is {self.label}") + "\n")
+            self.stream.flush()
+        except (OSError, UnicodeEncodeError):
+            pass
+
+    def _run(self) -> None:
+        i = 0
+        max_len = 0
+        while not self._stop.is_set():
+            frame = self._FRAMES[i % len(self._FRAMES)]
+            i += 1
+            text = f"  ↳ claudio is {self.label} {frame}"
+            max_len = max(max_len, len(text))
+            try:
+                self.stream.write("\r" + self._styled(text))
+                self.stream.flush()
+            except (OSError, ValueError):
+                return
+            if self._stop.wait(self._TICK_SECONDS):
+                break
+        # Commit: clear the animated frame, write the bare label, newline.
+        final_text = f"  ↳ claudio is {self.label}"
+        pad = " " * max(0, max_len - len(final_text))
+        try:
+            self.stream.write("\r" + self._styled(final_text) + pad + "\n")
+            self.stream.flush()
+        except (OSError, ValueError):
+            pass
+
+
+def _truncate_breadcrumb_label(label: str, stream) -> str:
+    """Shorten an overlong breadcrumb label so it fits the terminal.
+
+    Long paths like `C:\\Users\\Foo\\Documents\\Perso\\claudio` would
+    otherwise wrap into a second visual row, breaking the carriage-return
+    based dot animation. We trim with a `…` prefix preserving the *tail*
+    (the part the user usually recognises -- the file/dir name) rather
+    than the head.
+    """
     try:
-        sys.stderr.write(line)
-        sys.stderr.flush()
+        width = shutil.get_terminal_size((80, 24)).columns
+    except (OSError, ValueError):
+        width = 80
+    # Leave room for the `↳ claudio is ` prefix and trailing `...` frame.
+    budget = max(20, width - _BreadcrumbAnimator._PREFIX_OVERHEAD)
+    if len(label) <= budget:
+        return label
+    # Keep the trailing chars (filename / last path segment).
+    return "…" + label[-(budget - 1):]
+
+
+def _emit_context_handoff() -> None:
+    """Print the 'context gathered, here's the answer' transition line.
+
+    Called once per turn, only when at least one tool_use event fired
+    before the first text delta. Marks the moment claudio finishes
+    gathering context and the actual response begins. Green ✓ on stdout
+    (so it's part of the response area, not the stderr noise stream),
+    then a blank line for visual breathing room.
+    """
+    use_color = colors_enabled(sys.stdout)
+    if use_color:
+        line = f"  {GREEN}✓{RESET} {DIM}claudio has enough context{RESET}\n\n"
+    else:
+        line = "  ✓ claudio has enough context\n\n"
+    try:
+        sys.stdout.write(line)
+        sys.stdout.flush()
     except (OSError, UnicodeEncodeError):
         pass
 

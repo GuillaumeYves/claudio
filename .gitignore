@@ -10,3 +10,5 @@ venv
 .pytest_cache
 .claudio/
 .claude/
+roadmap.md
+patchnote.md

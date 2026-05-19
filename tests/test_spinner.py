@@ -74,3 +74,45 @@ def test_spinner_survives_stream_errors():
     # Must not raise -- spinner runs in a daemon thread and catches OSError.
     with Spinner("x", stream=stream):
         time.sleep(0.15)
+
+
+def test_spinner_dot_mode_uses_dot_frames():
+    """use_dots() swaps the braille frames for the cycling three-dot
+    animation so tool activity reads as 'thinking', not 'rotating'."""
+    stream = FakeStream(tty=True)
+    stream.encoding = "utf-8"
+    spinner = Spinner("doing thing", stream=stream)
+    spinner.use_dots()
+    spinner.start()
+    time.sleep(0.25)
+    spinner.stop()
+    joined = "".join(stream.writes)
+    # At least one of the dot frame characters must appear
+    assert "●" in joined or "·" in joined
+
+
+def test_spinner_default_uses_braille_frames():
+    """Without use_dots(), the original braille frames are emitted."""
+    stream = FakeStream(tty=True)
+    stream.encoding = "utf-8"
+    with Spinner("default", stream=stream):
+        time.sleep(0.25)
+    joined = "".join(stream.writes)
+    # At least one braille frame should have been written
+    assert any(g in joined for g in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+
+
+def test_spinner_use_default_reverts_after_dots():
+    """Calling use_default() after use_dots() restores braille frames."""
+    stream = FakeStream(tty=True)
+    stream.encoding = "utf-8"
+    spinner = Spinner("x", stream=stream)
+    spinner.use_dots()
+    spinner.start()
+    time.sleep(0.15)
+    spinner.use_default()
+    time.sleep(0.20)
+    spinner.stop()
+    joined = "".join(stream.writes)
+    # Should contain braille (post-revert) at some point
+    assert any(g in joined for g in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")

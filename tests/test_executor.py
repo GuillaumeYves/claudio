@@ -2,11 +2,49 @@
 
 from __future__ import annotations
 
+import io
 import subprocess
 
 import pytest
 
 from claudio import executor
+
+
+class _FakeTTYErr(io.StringIO):
+    """StringIO that pretends to be a TTY so colors_enabled() returns True."""
+    def isatty(self) -> bool:
+        return True
+
+
+def test_print_error_emits_full_line_in_red(monkeypatch):
+    """`_print_error` paints both the [claudio:error] label AND the
+    message body in red. Previously only the label was coloured."""
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.delenv("CLAUDIO_NO_COLOR", raising=False)
+    fake = _FakeTTYErr()
+    monkeypatch.setattr("sys.stderr", fake)
+    executor._print_error("Claude CLI error: boom")
+    out = fake.getvalue()
+    # RED foreground (\x1b[31m) appears at least twice: label + body
+    assert out.count("\x1b[31m") >= 2
+    # BOLD on the label
+    assert "\x1b[1m" in out
+    assert "Claude CLI error: boom" in out
+
+
+def test_print_error_plain_text_when_not_tty():
+    """Piped stderr (non-TTY) yields plain text -- no ANSI escapes."""
+    fake = io.StringIO()  # not a TTY
+    import sys as _sys
+    orig = _sys.stderr
+    _sys.stderr = fake
+    try:
+        executor._print_error("just a message")
+    finally:
+        _sys.stderr = orig
+    out = fake.getvalue()
+    assert "\x1b[" not in out
+    assert "[claudio:error] just a message" in out
 
 
 @pytest.fixture(autouse=True)
