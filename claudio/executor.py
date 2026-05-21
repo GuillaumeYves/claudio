@@ -159,8 +159,17 @@ def execute_prompt(
     session_id: str | None = None,
     resume: str | None = None,
     allowed_tools: list[str] | None = None,
+    permission_mode: str | None = None,
 ) -> tuple[str, bool]:
     """Send a prompt to Claude CLI.
+
+    Args:
+        permission_mode: Maps to the CLI's `--permission-mode`. Headless
+            `claude --print` denies file-mutating tools by default (there's
+            no human to approve them), so a build that should actually edit
+            files must pass e.g. `acceptEdits` — otherwise Claude emits the
+            Edit/Write tool_use events but the writes are auto-denied and
+            nothing reaches disk.
 
     Returns:
         (response_text, was_streamed) — `was_streamed` tells the caller
@@ -203,6 +212,8 @@ def execute_prompt(
         cmd.extend(["--session-id", session_id])
     if allowed_tools:
         cmd.extend(["--allowedTools", ",".join(allowed_tools)])
+    if permission_mode:
+        cmd.extend(["--permission-mode", permission_mode])
 
     spinner_label = f"asking {model}" if model else "asking claude"
 

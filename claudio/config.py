@@ -10,6 +10,12 @@ DEFAULT_CONFIG = {
     "compression_threshold": 4000,
     "output_format": "text",
     "verbose": False,
+    # Permission mode claudio hands to `claude` for build (refactor/generate).
+    # "acceptEdits" lets Claude apply file edits without an interactive prompt
+    # (required for headless `--print` runs to actually write to disk). Set to
+    # "default" to make build preview-only again, or "bypassPermissions" to
+    # also auto-approve shell/other tools.
+    "build_permission_mode": "acceptEdits",
 }
 
 CONFIG_DIR = Path.home() / ".config" / "claudio"

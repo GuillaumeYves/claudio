@@ -224,3 +224,31 @@ def test_executor_skips_fallback_model_when_unconfigured(monkeypatch):
     )
     executor.execute_prompt("hello")
     assert "--fallback-model" not in captured["cmd"]
+
+
+# ---- permission mode passthrough --------------------------------------
+
+def test_executor_passes_permission_mode(monkeypatch):
+    captured: dict = {}
+
+    def fake_run(cmd, *args, **kwargs):
+        captured["cmd"] = cmd
+        return _completed(stdout="ok")
+
+    monkeypatch.setattr(executor.subprocess, "run", fake_run)
+    executor.execute_prompt("hello", permission_mode="acceptEdits")
+    assert "--permission-mode" in captured["cmd"]
+    idx = captured["cmd"].index("--permission-mode")
+    assert captured["cmd"][idx + 1] == "acceptEdits"
+
+
+def test_executor_omits_permission_mode_by_default(monkeypatch):
+    captured: dict = {}
+
+    def fake_run(cmd, *args, **kwargs):
+        captured["cmd"] = cmd
+        return _completed(stdout="ok")
+
+    monkeypatch.setattr(executor.subprocess, "run", fake_run)
+    executor.execute_prompt("hello")
+    assert "--permission-mode" not in captured["cmd"]

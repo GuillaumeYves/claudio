@@ -102,8 +102,16 @@ claudio build -generate @src/models/user.py "create a REST endpoint for user CRU
 claudio build -generate "python script that watches a directory for CSV changes and loads them into SQLite"
 ```
 
-**Refactor output:** unified diff with one-line explanation per change.
-**Generate output:** complete, runnable code block.
+**Build applies its changes to disk.** Unlike `ask` (read-only), `build` grants
+Claude its editing tools and applies the edits directly, then prints the
+resulting `git diff` plus a one-line summary. This is gated by the
+`build_permission_mode` config (default `acceptEdits`); set it to `default` —
+or export `CLAUDIO_BUILD_PERMISSION_MODE=default` — to make build preview-only
+(describe the change without writing it). Use `--dry-run` to see the optimized
+prompt without calling Claude at all.
+
+**Refactor output:** edits applied in place + a short summary of what changed.
+**Generate output:** code written to the target file(s) + a short summary.
 
 ---
 
@@ -616,6 +624,7 @@ Flags plumbed to the Claude CLI when set:
 - `--model` → `claude --model` (auto-routed by intent + input size if unset; see below)
 - `--session-id` / `--resume` → session continuity across calls (warm prompt cache)
 - `--agentic` (claudio run) → adds `--allowedTools Read,Grep,Glob` for agentic execution
+- `claudio build` → adds `--permission-mode <build_permission_mode>` (default `acceptEdits`) so the edits actually land on disk; mutating builds bypass the response cache since edits are side effects
 
 ---
 

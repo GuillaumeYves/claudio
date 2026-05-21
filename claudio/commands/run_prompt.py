@@ -115,6 +115,12 @@ def resolve_model(ctx: dict, intent: str, input_tokens: int) -> str | None:
     return pick_model(intent, input_tokens)
 
 
+# Permission modes that let Claude mutate the filesystem. Runs in these
+# modes are side-effecting, so their output must NOT be cached — a cache hit
+# would replay the stored narration ("Done!") without re-applying the edit.
+_MUTATING_PERMISSION_MODES = {"acceptEdits", "bypassPermissions"}
+
+
 def execute_with_tracking(
     prompt: str,
     ctx: dict,
@@ -124,6 +130,7 @@ def execute_with_tracking(
     intent: str = "general",
     metadata: dict | None = None,
     allowed_tools: list[str] | None = None,
+    permission_mode: str | None = None,
 ) -> str | None:
     """Execute a prompt with cache check, model routing, and usage tracking.
 
@@ -139,6 +146,10 @@ def execute_with_tracking(
         intent: Pipeline intent — drives model routing when --model not set.
         metadata: Pipeline metadata to display in verbose mode.
         allowed_tools: Optional tool allowlist (used by agentic run).
+        permission_mode: Optional CLI permission mode. When it permits file
+            mutation (see _MUTATING_PERMISSION_MODES), caching is bypassed so
+            the edit actually runs every time instead of replaying a stored
+            response.
 
     Returns:
         Response string, or None if dry-run.
@@ -155,8 +166,11 @@ def execute_with_tracking(
         return None
 
     # Cache check (unless --no-cache). Skip cache when resuming a session —
-    # the user explicitly wants a fresh Claude turn, not a stored echo.
-    use_cache = not ctx.get("no_cache") and not ctx.get("resume")
+    # the user explicitly wants a fresh Claude turn, not a stored echo — and
+    # whenever this run can mutate files, since edits are side effects that a
+    # cached response wouldn't reproduce.
+    mutating = permission_mode in _MUTATING_PERMISSION_MODES
+    use_cache = not ctx.get("no_cache") and not ctx.get("resume") and not mutating
     if use_cache:
         cached = cache_get(prompt)
         if cached is not None:
@@ -173,6 +187,7 @@ def execute_with_tracking(
         session_id=ctx.get("session_id"),
         resume=ctx.get("resume"),
         allowed_tools=allowed_tools,
+        permission_mode=permission_mode,
     )
 
     # Cache store

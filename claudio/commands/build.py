@@ -9,9 +9,15 @@ Usage:
     claudio build -generate @models/user.py "REST endpoint for users"
 """
 
+import os
+import subprocess
+import sys
+
 from claudio import session_files
+from claudio.config import load_config
 from claudio.pipeline.process import process
 from claudio.commands.run_prompt import (
+    _MUTATING_PERMISSION_MODES,
     collect_clarification_answer,
     execute_with_tracking,
     parse_need_clarification,
@@ -38,15 +44,20 @@ BUILD_MODES = {
 #   - "Stop after the artifact" — no trailing summary / restatement of what
 #     was changed. The user can `ask -q` for elaboration; in REPL auto-chain
 #     mode that follow-up is essentially free.
+# Build is the "actually change the code" verb: unlike ask (read-only), these
+# modes instruct Claude to apply edits to disk with its Edit/Write tools rather
+# than print a diff. The write only lands when claudio also grants a mutating
+# permission mode (see _build_permission_mode); without it, headless `claude`
+# auto-denies the edit and you'd get narration but no change.
 MODE_CONFIG = {
     "refactor": {
         "intent": "refactor",
         "constraints": [
             "Preserve behavior",
-            "Output unified diff only",
-            "<=1 line reason inline per hunk as a `# why:` comment",
+            "Apply the changes directly to the file(s) with your Edit tool",
+            "Keep edits minimal and focused",
         ],
-        "output_format": "unified diff, no surrounding prose",
+        "output_format": "after editing, a <=2 line summary of what changed",
         "task_prefix": "Refactor",
     },
     "generate": {
@@ -54,9 +65,10 @@ MODE_CONFIG = {
         "constraints": [
             "Production-ready code only",
             "Match conventions in context",
+            "Write the code to the appropriate file(s); create them if missing",
             "Minimal imports",
         ],
-        "output_format": "single fenced code block, no surrounding prose",
+        "output_format": "after writing, a <=2 line summary of the files created/changed",
         "task_prefix": "Generate",
     },
 }
@@ -100,6 +112,7 @@ def execute(raw_args: list[str], ctx: dict) -> int:
     task = f"{config['task_prefix']}: {parsed.prompt}" if parsed.prompt else config["task_prefix"]
 
     allow_feedback = bool(ctx.get("feedback") and parsed.files)
+    permission_mode = _build_permission_mode(ctx)
 
     response = _process_and_execute(
         files=parsed.files,
@@ -109,6 +122,7 @@ def execute(raw_args: list[str], ctx: dict) -> int:
         ctx=ctx,
         out=out,
         allow_feedback=allow_feedback,
+        permission_mode=permission_mode,
     )
 
     # Two-way feedback signals (gated by --feedback). Mutually exclusive:
@@ -128,7 +142,9 @@ def execute(raw_args: list[str], ctx: dict) -> int:
                     ctx={**ctx, "no_cache": True},
                     out=out,
                     allow_feedback=False,
+                    permission_mode=permission_mode,
                 )
+            _show_applied_diff(parsed.files, ctx, out, permission_mode)
             return 0
 
         needs = parse_need_context(response)
@@ -148,12 +164,33 @@ def execute(raw_args: list[str], ctx: dict) -> int:
                     ctx={**ctx, "no_cache": True},
                     out=out,
                     allow_feedback=False,
+                    permission_mode=permission_mode,
                 )
 
+    _show_applied_diff(parsed.files, ctx, out, permission_mode)
     return 0
 
 
-def _process_and_execute(files, task, mode, config, ctx, out, allow_feedback):
+def _build_permission_mode(ctx: dict) -> str | None:
+    """Resolve the CLI permission mode for this build.
+
+    Precedence: CLAUDIO_BUILD_PERMISSION_MODE env > config.build_permission_mode
+    > "acceptEdits". A value of "default"/"" disables auto-apply (preview only).
+    Dry runs never get a mutating mode — there's nothing to apply.
+    """
+    if ctx.get("dry_run"):
+        return None
+    mode = os.environ.get("CLAUDIO_BUILD_PERMISSION_MODE")
+    if mode is None:
+        mode = load_config().get("build_permission_mode", "acceptEdits")
+    mode = (mode or "").strip()
+    if not mode or mode == "default":
+        return None
+    return mode
+
+
+def _process_and_execute(files, task, mode, config, ctx, out, allow_feedback,
+                         permission_mode=None):
     # Mark which files Claude has already seen this session so we can swap
     # in a compact <file unchanged="true"/> marker instead of re-sending
     # the full body. Uses --session-id or --resume from ctx as the key.
@@ -189,6 +226,7 @@ def _process_and_execute(files, task, mode, config, ctx, out, allow_feedback):
         mode=mode,
         intent=config["intent"],
         metadata=result.metadata,
+        permission_mode=permission_mode,
     )
 
 
@@ -202,3 +240,44 @@ def _expand_file_range(files, requested_path: str, requested_lines: str) -> bool
             resolve_file_attachments([fa])
             return bool(fa.content)
     return False
+
+
+def _show_applied_diff(files, ctx: dict, out, permission_mode) -> None:
+    """Print the git diff of the attached files after Claude edits them.
+
+    Build now applies edits via tools instead of printing a diff, so the
+    stream only shows `editing foo.py` breadcrumbs. To keep the old "here's
+    what changed" transparency we replay the actual on-disk diff once the run
+    finishes. Best-effort: skipped in dry-run / JSON / preview modes and when
+    git isn't available. Written to stderr so piped stdout stays clean.
+    """
+    from claudio.utils.colors import colors_enabled
+
+    if permission_mode not in _MUTATING_PERMISSION_MODES:
+        return
+    if ctx.get("dry_run") or ctx.get("json_output"):
+        return
+    paths = [fa.path for fa in files] if files else []
+    if not paths:
+        return
+
+    use_color = colors_enabled(sys.stderr)
+    args = ["git"]
+    if use_color:
+        args += ["-c", "color.ui=always"]
+    args += ["diff", "--", *paths]
+    try:
+        result = subprocess.run(
+            args, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return
+    diff = (result.stdout or "").strip() if result.returncode == 0 else ""
+    if not diff:
+        return
+    out.success("applied changes:")
+    try:
+        print(diff, file=sys.stderr)
+    except UnicodeEncodeError:
+        print(diff.encode("utf-8", "replace").decode("ascii", "replace"), file=sys.stderr)
