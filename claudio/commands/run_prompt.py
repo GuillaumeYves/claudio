@@ -36,6 +36,20 @@ _NEED_CLARIFICATION_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Signal pattern for the read-only -> build escalation channel. Claude emits
+# this from a read-only command (ask/question/debug) when satisfying the
+# request would require mutating files or running a build step — work that
+# only build/run are allowed to do. `mode` is "generate" (new files) or
+# "refactor" (changes to existing code); both attributes are optional so a
+# bare <needs-build/> still parses (we default mode to "generate").
+_NEEDS_BUILD_RE = re.compile(
+    r'<needs-build'
+    r'(?:\s+mode=["\']([^"\']*)["\'])?'
+    r'(?:\s+reason=["\']([^"\']*)["\'])?'
+    r'\s*/?>',
+    re.IGNORECASE,
+)
+
 
 def parse_need_clarification(response: str) -> str | None:
     """If `response` is a clarification request, return the question text.
@@ -75,6 +89,28 @@ def collect_clarification_answer(question: str, out: Output) -> str | None:
         return None
     answer = answer.strip()
     return answer or None
+
+
+def parse_needs_build(response: str) -> tuple[str, str] | None:
+    """If `response` is a read-only -> build escalation, return (mode, reason).
+
+    `mode` is normalised to "generate" or "refactor" (anything unrecognised,
+    or a bare tag with no mode, falls back to "generate"). `reason` may be an
+    empty string. Returns None for a normal answer. Recognised only when the
+    response *starts* with the tag, mirroring the other signals — so Claude
+    quoting `<needs-build/>` mid-explanation stays prose.
+    """
+    stripped = response.strip()
+    if not stripped.lower().startswith("<needs-build"):
+        return None
+    m = _NEEDS_BUILD_RE.search(stripped)
+    if not m:
+        return None
+    mode = (m.group(1) or "").strip().lower()
+    if mode not in ("generate", "refactor"):
+        mode = "generate"
+    reason = (m.group(2) or "").strip()
+    return mode, reason
 
 
 def parse_need_context(response: str) -> list[tuple[str, str, str]] | None:

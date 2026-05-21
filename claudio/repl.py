@@ -67,6 +67,7 @@ Slash commands:
     /model NAME      Set model for this session (haiku|sonnet|opus)
     /mode CMD MODE   Pin a sticky mode (e.g. `/mode ask -review`); /mode
                      alone shows current, /mode none clears it
+    /setup           Configure permission posture (what Claude may do alone)
     /cwd [PATH]      Show or change working directory
     /clear           Clear the screen
     /fresh           Drop the current conversation and start a new session
@@ -141,6 +142,7 @@ _SLASH_COMMANDS = {
     "/help": "Show commands",
     "/model": "Set session model",
     "/mode": "Show / pin / clear the sticky command+mode",
+    "/setup": "Configure permission posture & parameters",
     "/cwd": "Show or change directory",
     "/clear": "Clear the screen",
     "/stats": "Token usage and cost",
@@ -470,6 +472,16 @@ def main(argv: list[str] | None = None) -> int:
     _print_banner()
     _print_update_notice()
 
+    # First-run setup: with no config file yet, let the user pick a permission
+    # posture before the first prompt. configure_permissions writes config on a
+    # choice, so this fires only once (an aborted wizard re-prompts next launch).
+    from claudio.config import config_exists
+    if not config_exists():
+        from claudio.commands.setup import configure_permissions
+        configure_permissions(first_run=True)
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+
     session_model: str | None = None
     # Auto-chain: every command in this REPL run shares one Anthropic session
     # so context accumulates naturally and the prompt cache stays warm. The
@@ -796,6 +808,10 @@ def _handle_slash(
         return ("mode", new_mode)
     if cmd == "/stats":
         _dispatch(["stats"] + (_tokenize(arg) if arg else []))
+        return None
+    if cmd == "/setup":
+        from claudio.commands.setup import configure_permissions
+        configure_permissions(first_run=False)
         return None
 
     print(f"[claudio] unknown command: {cmd}. Try /help.", file=sys.stderr)

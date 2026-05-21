@@ -54,12 +54,13 @@ claudio setup
 
 This will:
 
+- **Set your permission posture** — how much Claude may do on its own when you `build` (see [Permissions](#permissions))
 - **Detect if `claudio` is on your PATH** and offer to add it automatically (recommended for speed -- type `claudio` from any directory instead of `python -m claudio`)
 - **Verify Claude CLI** is installed
 - **Create config directory** at `~/.config/claudio/`
 - **Install shell completions** (Bash, Zsh, or PowerShell) for tab-completing commands, modes, flags, and `@file` paths
 
-If you decline any step, it shows you the exact command to do it manually.
+If you decline any step, it shows you the exact command to do it manually. The permission step also runs **automatically the first time you launch the `claudio` REPL**, and is re-runnable anytime via `/setup`.
 
 Claudio calls the [Claude CLI](https://docs.anthropic.com/en/docs/claude-code) under the hood. Install it separately if you haven't already. You can use `--dry-run` on any command to see the optimized prompt without sending it.
 
@@ -104,11 +105,11 @@ claudio build -generate "python script that watches a directory for CSV changes 
 
 **Build applies its changes to disk.** Unlike `ask` (read-only), `build` grants
 Claude its editing tools and applies the edits directly, then prints the
-resulting `git diff` plus a one-line summary. This is gated by the
-`build_permission_mode` config (default `acceptEdits`); set it to `default` —
-or export `CLAUDIO_BUILD_PERMISSION_MODE=default` — to make build preview-only
-(describe the change without writing it). Use `--dry-run` to see the optimized
-prompt without calling Claude at all.
+resulting `git diff` plus a one-line summary. How much it may do is governed by
+your **[permission posture](#permissions)** (default *Edits only* — apply edits,
+no shell commands); change it via `claudio setup` / `/setup`, or export
+`CLAUDIO_BUILD_PERMISSION_MODE=default` for a one-off preview-only run. Use
+`--dry-run` to see the optimized prompt without calling Claude at all.
 
 **Refactor output:** edits applied in place + a short summary of what changed.
 **Generate output:** code written to the target file(s) + a short summary.
@@ -150,6 +151,8 @@ claudio ask -debug @src/db.py -30-45 "this query returns duplicates when it shou
 **Review output:** issues ranked by severity with fixes.
 **Question output:** concise, direct answer.
 **Debug output:** root cause, fix (as diff), brief explanation.
+
+**`ask` is always read-only** — it never writes to disk, whatever your permission posture. If a request actually needs file changes, Claude says so and claudio offers to re-run it in `build` mode (resuming the same session). See [Permissions](#permissions).
 
 ---
 
@@ -221,13 +224,13 @@ A template is provided at `claudio-task.template.json`.
 
 ### `claudio setup`
 
-Post-install configuration.
+Post-install configuration. Re-runnable anytime; the permission step also runs automatically the first time you launch the `claudio` REPL.
 
 ```bash
 claudio setup
 ```
 
-Checks PATH, offers automatic setup, installs shell completions, verifies Claude CLI.
+Sets your **[permission posture](#permissions)**, checks PATH, installs shell completions, and verifies the Claude CLI. Inside the REPL, `/setup` re-runs just the permission picker.
 
 ---
 
@@ -243,7 +246,7 @@ claudio
   █▀▀ █   ▄▀█ █ █ █▀▄ █ █▀█
   █▄▄ █▄▄ █▀█ █▄█ █▄▀ █ █▄█
 
-  ✻ Claudio v1.3.0
+  ✻ Claudio v1.5.0
 
   /help for commands  ·  @ to reference files  ·  Ctrl-D to exit
   cwd: ~/Documents/Perso/claudio
@@ -285,6 +288,7 @@ While Claude uses tools (Read, Edit, Grep, Bash, …) the activity surfaces as e
 | `/help`              | Show available commands                                                                          |
 | `/model NAME`        | Pin a model for the session (`haiku`, `sonnet`, `opus`). `/model auto` resets.           |
 | `/mode CMD MODE`     | Pin a sticky mode (`/mode ask -review`). `/mode` alone shows current; `/mode none` clears. |
+| `/setup`             | Configure the permission posture (what Claude may do on its own)                                 |
 | `/cwd [PATH]`        | Show or change the working directory                                                             |
 | `/clear`             | Clear the screen                                                                                 |
 | `/fresh`             | Start a new conversation (drops Claude's memory + sticky state)                                  |
@@ -624,7 +628,7 @@ Flags plumbed to the Claude CLI when set:
 - `--model` → `claude --model` (auto-routed by intent + input size if unset; see below)
 - `--session-id` / `--resume` → session continuity across calls (warm prompt cache)
 - `--agentic` (claudio run) → adds `--allowedTools Read,Grep,Glob` for agentic execution
-- `claudio build` → adds `--permission-mode <build_permission_mode>` (default `acceptEdits`) so the edits actually land on disk; mutating builds bypass the response cache since edits are side effects
+- `claudio build` → adds `--permission-mode <…>` resolved from your [permission posture](#permissions) (default `acceptEdits`) so the edits actually land on disk; mutating builds bypass the response cache since edits are side effects
 
 ---
 
@@ -724,6 +728,45 @@ Use `--verbose` to see estimates on any command:
 
 ---
 
+## Permissions
+
+Claudio drives Claude **headless** (`claude --print`), where there's no mid-run popup to approve an edit — the decision has to be made up front. A single **permission posture** controls how much Claude may do on its own when you `build`:
+
+| Posture                            | Claude may…                                | Under the hood                          |
+| ---------------------------------- | ------------------------------------------- | --------------------------------------- |
+| **Autonomous**               | edit files**and** run shell commands  | `--permission-mode bypassPermissions` |
+| **Edits only** *(default)* | edit files, but not run shell commands      | `--permission-mode acceptEdits`       |
+| **Confirm first**            | edit files after you approve once per build | `acceptEdits` + a `Y/n` gate        |
+| **Preview only**             | nothing — just print the diff              | `--permission-mode default`           |
+
+Because nothing pauses mid-run, *Confirm first* is a single coarse `Y/n` gate **before** a build starts, not a per-edit prompt.
+
+Set it with the **first-run wizard** (auto-runs the first time you launch `claudio`), or anytime via `/setup` in the REPL or `claudio setup`:
+
+```
+How much can Claude do on its own?
+  1) Autonomous    - apply edits AND run shell commands automatically
+  2) Edits only    - apply edits automatically, never run commands  (default)
+  3) Confirm first - ask once before each build applies, then apply
+  4) Preview only  - never apply - just print the diff
+```
+
+The choice is saved as `permission_posture` in `~/.config/claudio/config.json`. A `CLAUDIO_BUILD_PERMISSION_MODE` env var still overrides the resolved `--permission-mode` for one-off runs.
+
+### Read-only modes escalate instead of failing
+
+`ask`, `review`, `question`, and `debug` are **always read-only** and ignore the posture entirely. But rather than silently attempting an edit the headless CLI would deny, Claude signals when a request actually needs build mode — and claudio offers to switch:
+
+```
+claudio [ask -review]> add a ROADMAP.md from your analysis
+  ⚠ This needs build mode: writing a new file is a mutation, not a review.
+  Re-run in build mode now? [Y/n]
+```
+
+On `Y`, claudio re-runs the request in `build` mode, **resuming the same session** so the analysis it just produced carries straight into the build.
+
+---
+
 ## Configuration
 
 Claudio looks for config at `~/.config/claudio/config.json`:
@@ -735,11 +778,12 @@ Claudio looks for config at `~/.config/claudio/config.json`:
   "max_input_tokens": 32000,
   "compression_threshold": 4000,
   "output_format": "text",
-  "verbose": false
+  "verbose": false,
+  "permission_posture": "edits"
 }
 ```
 
-All fields are optional. Defaults are used for anything not specified.
+All fields are optional. Defaults are used for anything not specified. `permission_posture` is one of `autonomous`, `edits`, `confirm`, or `preview` (see [Permissions](#permissions)) — normally set by the wizard rather than by hand.
 
 ---
 
@@ -776,7 +820,7 @@ claudio/
     run.py               claudio run (claudio-task.json)
     run_prompt.py        Shared execution with cache + tracking + feedback channels
     stats.py             claudio stats (usage dashboard)
-    setup.py             claudio setup (PATH, completions, verification)
+    setup.py             claudio setup (permission posture, PATH, completions, verification)
   completions/
     bash.py              Bash completion generator
     zsh.py               Zsh completion generator
@@ -799,7 +843,7 @@ claudio/
     spinner.py           TTY-only stderr progress spinner
     update_check.py      Background PyPI version check
     model_router.py      Cheapest-model-that-fits routing
-tests/                   pytest suite (268 tests across pipeline, REPL, context, executor)
+tests/                   pytest suite (336 tests across pipeline, REPL, context, executor)
 ```
 
 ---
@@ -815,9 +859,3 @@ pip install --upgrade claudio-cli
 # Install a specific version
 pip install claudio-cli==0.2.0
 ```
-
----
-
-## License
-
-[MIT](LICENSE)

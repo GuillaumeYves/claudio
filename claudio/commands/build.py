@@ -14,7 +14,7 @@ import subprocess
 import sys
 
 from claudio import session_files
-from claudio.config import load_config
+from claudio.config import permission_posture, posture_permission_mode
 from claudio.pipeline.process import process
 from claudio.commands.run_prompt import (
     _MUTATING_PERMISSION_MODES,
@@ -114,6 +114,10 @@ def execute(raw_args: list[str], ctx: dict) -> int:
     allow_feedback = bool(ctx.get("feedback") and parsed.files)
     permission_mode = _build_permission_mode(ctx)
 
+    # "confirm" posture: one Y/n gate before we apply anything.
+    if not _confirm_build_if_needed(parsed.files, parsed.prompt, ctx, out):
+        return 0
+
     response = _process_and_execute(
         files=parsed.files,
         task=task,
@@ -174,19 +178,48 @@ def execute(raw_args: list[str], ctx: dict) -> int:
 def _build_permission_mode(ctx: dict) -> str | None:
     """Resolve the CLI permission mode for this build.
 
-    Precedence: CLAUDIO_BUILD_PERMISSION_MODE env > config.build_permission_mode
-    > "acceptEdits". A value of "default"/"" disables auto-apply (preview only).
-    Dry runs never get a mutating mode — there's nothing to apply.
+    Precedence: dry-run (None — nothing to apply) > CLAUDIO_BUILD_PERMISSION_MODE
+    env (power-user / test override; "default"/"" means preview-only) > the
+    configured permission posture (see config.PERMISSION_POSTURES, set by the
+    setup wizard).
     """
     if ctx.get("dry_run"):
         return None
     mode = os.environ.get("CLAUDIO_BUILD_PERMISSION_MODE")
-    if mode is None:
-        mode = load_config().get("build_permission_mode", "acceptEdits")
-    mode = (mode or "").strip()
-    if not mode or mode == "default":
-        return None
-    return mode
+    if mode is not None:
+        mode = mode.strip()
+        if not mode or mode == "default":
+            return None
+        return mode
+    return posture_permission_mode()
+
+
+def _confirm_build_if_needed(files, user_prompt, ctx, out) -> bool:
+    """Honor the 'confirm' posture: ask once before a build applies edits.
+
+    Returns True to proceed, False to abort. Only gates interactive, non-dry,
+    non-json builds under the 'confirm' posture; every other posture (and any
+    non-TTY / piped / dry-run invocation) proceeds untouched. This is a coarse
+    per-invocation gate, not a per-edit popup — the user opted into it knowing
+    headless claudio can't prompt mid-run.
+    """
+    if ctx.get("dry_run") or ctx.get("json_output") or not sys.stdin.isatty():
+        return True
+    if permission_posture() != "confirm":
+        return True
+    targets = ", ".join(fa.path for fa in files) if files else "the relevant file(s)"
+    out.info(f"Build will edit {targets} to: {user_prompt or '(see task)'}")
+    try:
+        sys.stderr.write("Proceed? [Y/n] ")
+        sys.stderr.flush()
+        answer = sys.stdin.readline().strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        sys.stderr.write("\n")
+        return False
+    if answer in ("", "y", "yes"):
+        return True
+    out.info("[claudio] Build cancelled.")
+    return False
 
 
 def _process_and_execute(files, task, mode, config, ctx, out, allow_feedback,

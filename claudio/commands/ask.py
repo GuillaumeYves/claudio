@@ -11,6 +11,8 @@ Usage:
     claudio ask -debug @server.log -100-200 "why is it timing out"
 """
 
+import sys
+
 from claudio import session_files
 from claudio.pipeline.process import process
 from claudio.commands.run_prompt import (
@@ -18,6 +20,7 @@ from claudio.commands.run_prompt import (
     execute_with_tracking,
     parse_need_clarification,
     parse_need_context,
+    parse_needs_build,
 )
 from claudio.utils.args import (
     parse_command_args,
@@ -125,6 +128,17 @@ def execute(raw_args: list[str], ctx: dict) -> int:
         allow_feedback=allow_feedback,
     )
 
+    # Read-only -> build escalation. Not gated by --feedback: ask can never
+    # mutate, so if Claude judged the request needs a write/build step it
+    # emits <needs-build/> instead of silently attempting (and being denied).
+    # We offer to re-run in build mode, resuming this same session so the
+    # analysis just produced carries straight into the build.
+    if response:
+        needs = parse_needs_build(response)
+        if needs:
+            _offer_build_switch(needs[0], needs[1], parsed.files, parsed.prompt, ctx, out)
+            return 0
+
     # Two-way feedback signals (gated by --feedback). Mutually exclusive:
     #   <need-clarification>  task is ambiguous -> ask the dev
     #   <need-context>        data is missing   -> expand file ranges
@@ -187,6 +201,9 @@ def _process_and_execute(files, task, config, ctx, out, allow_feedback):
         constraints=_with_terseness(config["intent"], config["constraints"]),
         output_format=config["output_format"],
         allow_context_request=allow_feedback,
+        # ask is always read-only — let Claude escalate to build mode instead
+        # of attempting a write the headless CLI would silently deny.
+        readonly_escalation=True,
     )
 
     if ctx["verbose"]:
@@ -202,6 +219,70 @@ def _process_and_execute(files, task, config, ctx, out, allow_feedback):
         mode=_mode_for(config),
         intent=config["intent"],
         metadata=result.metadata,
+    )
+
+
+def _offer_build_switch(mode, reason, files, user_prompt, ctx, out):
+    """Claude (read-only) signalled the request needs build mode — mediate it.
+
+    Interactive TTY: explain why, then prompt to re-run in build mode now. On
+    yes we call build's own execute path with the *same* FileAttachment objects
+    (line ranges intact) and resume the session ask just used, so the analysis
+    carries over and the edit actually lands. build's acceptEdits already
+    bypasses the response cache, so the write isn't replayed from a stored echo.
+
+    Non-interactive or --json: print the equivalent `build` command and stop —
+    there's no human to confirm an auto-switch in a pipe or CI run.
+    """
+    label = "generate" if mode == "generate" else "refactor"
+    flag = "-g" if label == "generate" else "-r"
+
+    if reason:
+        out.warn(f"This needs build mode: {reason}")
+    else:
+        out.warn("This needs build mode (it would create or modify files).")
+
+    if ctx.get("json_output") or not sys.stdin.isatty():
+        files_part = (" ".join(fa.path for fa in files) + " ") if files else ""
+        out.info(f'[claudio] Re-run in build mode:  build {flag} {files_part}"{user_prompt}"')
+        return
+
+    try:
+        sys.stderr.write(f"Re-run in build mode ({label}) now? [Y/n] ")
+        sys.stderr.flush()
+        answer = sys.stdin.readline().strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        sys.stderr.write("\n")
+        return
+    if answer not in ("", "y", "yes"):
+        out.info("[claudio] Staying in ask mode.")
+        return
+
+    # Lazy import avoids a build <-> ask import cycle at module load.
+    from claudio.commands import build as build_cmd
+
+    config = build_cmd.MODE_CONFIG[label]
+    build_task = (
+        f"{config['task_prefix']}: {user_prompt}" if user_prompt else config["task_prefix"]
+    )
+    # Resume whatever session ask used (it created/continued one on the Claude
+    # side), so the build turn inherits the analysis. session_id is cleared so
+    # we --resume rather than try to re-create an existing session.
+    build_ctx = {
+        **ctx,
+        "resume": ctx.get("resume") or ctx.get("session_id"),
+        "session_id": None,
+    }
+    permission_mode = build_cmd._build_permission_mode(build_ctx)
+    build_cmd._process_and_execute(
+        files=files,
+        task=build_task,
+        mode=label,
+        config=config,
+        ctx=build_ctx,
+        out=out,
+        allow_feedback=False,
+        permission_mode=permission_mode,
     )
 
 

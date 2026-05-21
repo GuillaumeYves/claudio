@@ -44,6 +44,7 @@ def build_prompt(
     output_format: str | None = None,
     intent: str = "general",
     allow_context_request: bool = False,
+    readonly_escalation: bool = False,
     project_preamble: str = "",
     git_changes: str = "",
 ) -> str:
@@ -86,6 +87,14 @@ def build_prompt(
         hint = _INTENT_HINTS.get(intent)
         if hint:
             parts.append(f"<intent>{hint}</intent>")
+
+    # Read-only escalation protocol -- in ask/question/debug, Claude can read
+    # and analyse but cannot mutate. Rather than silently attempting a write
+    # the headless CLI will deny, it emits <needs-build/> so claudio can offer
+    # to switch the user into build mode. Always on for read-only commands
+    # (not gated by --feedback): it's a capability boundary, not a nicety.
+    if readonly_escalation:
+        parts.append(_READONLY_PROTOCOL)
 
     # Two-way context protocol -- lets Claude request more context instead
     # of hallucinating when compression was too aggressive.
@@ -144,4 +153,22 @@ _CONTEXT_PROTOCOL = (
     '<need-clarification question="..."/>\n'
     "and stop. Otherwise proceed normally.\n"
     "</context-protocol>"
+)
+
+
+# Capability boundary for read-only commands (ask / question / debug). Claude
+# may read, search, and analyse, but file mutation and command execution are
+# reserved for claudio's build/run modes. When a request actually needs those,
+# Claude emits <needs-build/> and stops; claudio (run_prompt.parse_needs_build)
+# catches it and offers to re-run the request in build mode.
+_READONLY_PROTOCOL = (
+    "<capabilities>\n"
+    "READ-ONLY mode: read, search, and analyse freely, but you CANNOT write or\n"
+    "edit files or run state-changing commands here — those belong to claudio's\n"
+    "build/run modes. If satisfying the request requires creating or modifying\n"
+    "files (or running a build/exec step), do NOT attempt it. Respond with ONLY:\n"
+    '<needs-build mode="generate" reason="one short line"/>\n'
+    'and stop (use mode="refactor" when changing existing code, "generate" for\n'
+    "new files). Otherwise answer normally.\n"
+    "</capabilities>"
 )

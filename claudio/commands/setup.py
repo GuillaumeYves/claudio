@@ -1,6 +1,9 @@
 """claudio setup -- post-install configuration.
 
-Detects if claudio is on PATH, offers to add it, verifies Claude CLI.
+Configures the permission posture (what Claude may do on its own), then detects
+if claudio is on PATH, offers to add it, and verifies the Claude CLI. Re-runnable
+anytime via `claudio setup` or `/setup` in the REPL; the permission step also
+fires automatically on the first REPL launch (see repl.first_run_setup).
 """
 
 import os
@@ -9,9 +12,69 @@ import shutil
 import sys
 from pathlib import Path
 
+from claudio.config import DEFAULT_POSTURE, permission_posture, save_config
+
+# (key, label, one-line description) — order is the menu order.
+_POSTURE_CHOICES = [
+    ("autonomous", "Autonomous", "apply edits AND run shell commands automatically"),
+    ("edits", "Edits only", "apply edits automatically, never run commands"),
+    ("confirm", "Confirm first", "ask once before each build applies, then apply"),
+    ("preview", "Preview only", "never apply - just print the diff"),
+]
+
+
+def configure_permissions(first_run: bool = False) -> str | None:
+    """Interactive permission-posture picker.
+
+    Writes the chosen posture to config and returns it. Returns None if the
+    user aborted (Ctrl-C / EOF) before choosing — callers treat that as "keep
+    whatever's there" (on first run, that's the built-in default).
+    """
+    if first_run:
+        print("  Welcome to Claudio - quick setup\n")
+        print("  This controls how much Claude can do on its own when you `build`.\n")
+    else:
+        print(f"  Permission posture (current: {permission_posture()})\n")
+
+    print("  How much can Claude do on its own?\n")
+    for i, (key, label, desc) in enumerate(_POSTURE_CHOICES, 1):
+        tag = "  (default)" if key == DEFAULT_POSTURE else ""
+        print(f"    {i}) {label:<14}- {desc}{tag}")
+    print()
+
+    try:
+        raw = input("  Choose [1-4, Enter = Edits only]: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return None
+
+    if not raw:
+        posture = DEFAULT_POSTURE
+    else:
+        try:
+            idx = int(raw)
+        except ValueError:
+            idx = 0
+        if 1 <= idx <= len(_POSTURE_CHOICES):
+            posture = _POSTURE_CHOICES[idx - 1][0]
+        else:
+            print("  Unrecognised choice - keeping the default (Edits only).")
+            posture = DEFAULT_POSTURE
+
+    path = save_config({"permission_posture": posture})
+    label = next(lbl for k, lbl, _ in _POSTURE_CHOICES if k == posture)
+    print(f"\n  [OK] Permission posture: {label}")
+    print(f"       Saved to {path}")
+    print("       Change anytime: `/setup` in the REPL, or `claudio setup`.")
+    return posture
+
 
 def execute(raw_args: list[str], ctx: dict) -> int:
-    print("Claudio -- Post-install setup\n")
+    print("Claudio -- Setup\n")
+
+    # Step 0: Permission posture — the parameter that governs what build does.
+    configure_permissions(first_run=False)
+    print()
 
     # Step 1: Check if claudio is already on PATH
     on_path = shutil.which("claudio") is not None
