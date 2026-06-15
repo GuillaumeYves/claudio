@@ -160,8 +160,8 @@ def resolve_file_attachments(files: list[FileAttachment]) -> tuple[list[FileAtta
     for fa in files:
         try:
             fa.content = read_file(fa.path, lines=fa.lines)
-        except (FileNotFoundError, ValueError) as e:
-            errors.append(str(e))
+        except (FileNotFoundError, PermissionError, ValueError, OSError) as e:
+            errors.append(f"cannot read {fa.path}: {e}")
     return files, errors
 
 

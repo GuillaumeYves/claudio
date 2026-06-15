@@ -252,3 +252,48 @@ def test_executor_omits_permission_mode_by_default(monkeypatch):
     monkeypatch.setattr(executor.subprocess, "run", fake_run)
     executor.execute_prompt("hello")
     assert "--permission-mode" not in captured["cmd"]
+
+
+# ---- agentic turn cap -------------------------------------------------
+
+def test_executor_passes_max_turns_by_default(monkeypatch):
+    captured: dict = {}
+
+    def fake_run(cmd, *args, **kwargs):
+        captured["cmd"] = cmd
+        return _completed(stdout="ok")
+
+    monkeypatch.setattr(executor.subprocess, "run", fake_run)
+    monkeypatch.setattr(executor, "load_config", lambda: {"timeout": 300})
+    monkeypatch.delenv("CLAUDIO_MAX_TURNS", raising=False)
+    executor.execute_prompt("hello")
+    assert "--max-turns" in captured["cmd"]
+    idx = captured["cmd"].index("--max-turns")
+    assert captured["cmd"][idx + 1] == str(executor._DEFAULT_MAX_TURNS)
+
+
+def test_executor_max_turns_env_override(monkeypatch):
+    captured: dict = {}
+
+    def fake_run(cmd, *args, **kwargs):
+        captured["cmd"] = cmd
+        return _completed(stdout="ok")
+
+    monkeypatch.setattr(executor.subprocess, "run", fake_run)
+    monkeypatch.setenv("CLAUDIO_MAX_TURNS", "3")
+    executor.execute_prompt("hello")
+    idx = captured["cmd"].index("--max-turns")
+    assert captured["cmd"][idx + 1] == "3"
+
+
+def test_executor_max_turns_zero_disables_cap(monkeypatch):
+    captured: dict = {}
+
+    def fake_run(cmd, *args, **kwargs):
+        captured["cmd"] = cmd
+        return _completed(stdout="ok")
+
+    monkeypatch.setattr(executor.subprocess, "run", fake_run)
+    monkeypatch.setenv("CLAUDIO_MAX_TURNS", "0")
+    executor.execute_prompt("hello")
+    assert "--max-turns" not in captured["cmd"]

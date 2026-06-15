@@ -132,14 +132,18 @@ def parse_need_context(response: str) -> list[tuple[str, str, str]] | None:
     return [(file, lines, reason or "") for file, lines, reason in matches]
 
 
-def resolve_model(ctx: dict, intent: str, input_tokens: int) -> str | None:
+def resolve_model(ctx: dict, intent: str, input_tokens: int, cmd: str = "") -> str | None:
     """Resolve the model to use for this call.
 
     Precedence:
       1. --model flag (ctx['model'])
       2. config.json 'default_model' (only honored if not the legacy 'sonnet'
          default, which we treat as "no preference" so routing kicks in)
-      3. pick_model(intent, input_tokens)
+      3. build floor: `build` writes code, so absent an explicit preference it
+         gets Opus regardless of input size — size-based routing would drop
+         most builds to Sonnet, which is too weak for the verb that mutates
+         the user's files.
+      4. pick_model(intent, input_tokens)
     """
     if ctx.get("model"):
         return ctx["model"]
@@ -148,6 +152,8 @@ def resolve_model(ctx: dict, intent: str, input_tokens: int) -> str | None:
     # If user explicitly set something non-default, respect it. Otherwise route.
     if configured and configured not in ("sonnet", None, ""):
         return configured
+    if cmd == "build":
+        return "opus"
     return pick_model(intent, input_tokens)
 
 
@@ -191,10 +197,15 @@ def execute_with_tracking(
         Response string, or None if dry-run.
     """
     input_tokens = estimate_tokens(prompt)
-    model = resolve_model(ctx, intent, input_tokens)
+    model = resolve_model(ctx, intent, input_tokens, cmd=cmd)
 
     if ctx.get("verbose") and model:
         out.info(f"[claudio] model: {model}")
+
+    if ctx.get("verbose"):
+        from claudio.config import permission_posture
+        mode_label = permission_mode or "default"
+        out.info(f"[claudio] permission mode: {mode_label} (posture: {permission_posture()})")
 
     # Dry run -- show prompt, log nothing
     if ctx["dry_run"]:

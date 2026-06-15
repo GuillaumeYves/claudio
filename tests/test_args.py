@@ -130,3 +130,27 @@ def test_resolve_reads_real_file(tmp_path):
     files, errors = resolve_file_attachments([fa])
     assert errors == []
     assert files[0].content == "print('hi')\n"
+
+
+def test_resolve_binary_file_reports_error(tmp_path):
+    """A binary blob (NUL bytes) is rejected, not fed as garbage to the prompt."""
+    f = tmp_path / "blob.bin"
+    f.write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR")
+    fa = FileAttachment(path=str(f))
+    _, errors = resolve_file_attachments([fa])
+    assert errors
+    assert "cannot read" in errors[0].lower()
+    assert "binary" in errors[0].lower()
+    # Path is named once (wrapper), not duplicated by read_file's reason.
+    assert errors[0].lower().count("blob.bin") == 1
+
+
+def test_resolve_crlf_file_is_normalized(tmp_path):
+    """CRLF files decode without leaking \\r into the attachment content."""
+    f = tmp_path / "crlf.py"
+    f.write_bytes(b"a = 1\r\nb = 2\r\n")
+    fa = FileAttachment(path=str(f))
+    files, errors = resolve_file_attachments([fa])
+    assert errors == []
+    assert "\r" not in files[0].content
+    assert files[0].content == "a = 1\nb = 2\n"

@@ -29,6 +29,9 @@ DEFAULT_CONFIG = {
     "default_model": "sonnet",
     "max_input_tokens": 32000,
     "compression_threshold": 4000,
+    # Cap on Claude's agentic tool-use loop per call (see executor._max_turns).
+    # Stops an ambiguous prompt from searching the repo until the timeout.
+    "max_turns": 12,
     "output_format": "text",
     "verbose": False,
     # See PERMISSION_POSTURES above. Set by the setup wizard; governs what

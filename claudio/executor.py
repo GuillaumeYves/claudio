@@ -83,6 +83,11 @@ _TRANSIENT_PATTERNS = re.compile(
 # Defaults — overridable via config.json or env.
 _DEFAULT_MAX_RETRIES = 3
 _DEFAULT_BACKOFF_BASE = 2.0  # 2s, 4s, 8s
+# Cap on Claude's agentic tool-use loop. Without it, an ambiguous prompt sends
+# Claude Read/Grep/Glob-ing around the repo turn after turn until the wall-clock
+# timeout — the "searching… thinking…" runaway. 12 turns is enough to gather
+# context for a focused claudio task without wandering. 0 disables the cap.
+_DEFAULT_MAX_TURNS = 12
 
 
 def find_claude_cli() -> str | None:
@@ -114,6 +119,21 @@ def _retry_settings() -> tuple[int, float]:
     except ValueError:
         backoff = _DEFAULT_BACKOFF_BASE
     return max(0, max_retries), max(0.1, backoff)
+
+
+def _max_turns() -> int:
+    """Resolve the agentic turn cap from env > config > default.
+
+    Returns 0 when the cap is disabled (CLAUDIO_MAX_TURNS=0 or max_turns: 0),
+    in which case no --max-turns flag is passed and Claude runs unbounded.
+    """
+    env = os.environ.get("CLAUDIO_MAX_TURNS")
+    cfg = load_config()
+    try:
+        turns = int(env) if env else int(cfg.get("max_turns", _DEFAULT_MAX_TURNS))
+    except ValueError:
+        turns = _DEFAULT_MAX_TURNS
+    return max(0, turns)
 
 
 def _streaming_enabled() -> bool:
@@ -200,6 +220,11 @@ def execute_prompt(
         cmd.extend(["--output-format", "stream-json", "--verbose"])
     if model:
         cmd.extend(["--model", model])
+    # Bound the agentic loop so an ambiguous prompt can't spin on tool calls
+    # until the wall-clock timeout. Skipped when disabled (0).
+    max_turns = _max_turns()
+    if max_turns:
+        cmd.extend(["--max-turns", str(max_turns)])
     # Pass --fallback-model if configured. The CLI uses this to retry once
     # against a cheaper/different model when the primary is overloaded —
     # complementary to our own retry loop (which handles network blips).
