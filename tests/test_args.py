@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from claudio.utils.args import (
     _normalize_file_flags,
+    _suggest_order,
     parse_command_args,
     resolve_file_attachments,
     FileAttachment,
@@ -103,6 +104,36 @@ def test_parse_max_files_enforced():
     p = parse_command_args(args, BUILD_MODES)
     assert len(p.files) == 10
     assert any("Maximum" in e for e in p.errors)
+
+
+# ---- corrected-order suggestion -----------------------------------------
+
+def test_clean_parse_has_no_suggestion():
+    p = parse_command_args(["-r", "@main.py", "-1-5", "trim"], BUILD_MODES)
+    assert p.errors == []
+    assert p.suggestion is None
+
+
+def test_order_violation_suggests_canonical_form():
+    # description before the @file -> rejected, with the fixed order offered.
+    p = parse_command_args(["-r", "some description", "@file.py"], BUILD_MODES)
+    assert p.errors
+    assert p.suggestion == '-r @file.py "some description"'
+
+
+def test_suggestion_keeps_line_range_with_its_file():
+    p = parse_command_args(["fix it", "-r", "@main.py", "-10-25"], BUILD_MODES)
+    assert p.suggestion == '-r @main.py -10-25 "fix it"'
+
+
+def test_suggest_order_reorders_mode_files_text():
+    # Direct helper check: scrambled input -> canonical order.
+    out = _suggest_order(["text here", "@a.py", "-g"], BUILD_MODES)
+    assert out == '-g @a.py "text here"'
+
+
+def test_suggest_order_returns_none_for_empty():
+    assert _suggest_order([], BUILD_MODES) is None
 
 
 # ---- resolve_file_attachments directory error ---------------------------

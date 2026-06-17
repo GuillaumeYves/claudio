@@ -75,6 +75,44 @@ def estimate_cost(input_tokens: int, output_tokens: int = 500) -> float:
     return input_cost + output_cost
 
 
+# Approximate input pricing per 1M tokens by model tier (USD). Output is
+# billed separately and varies with response length, so --estimate reports
+# input cost only. Kept coarse on purpose — this is a pre-flight gut-check,
+# not a billing statement.
+_INPUT_PRICE_PER_M = {
+    "haiku": 1.00,
+    "sonnet": 3.00,
+    "opus": 15.00,
+}
+
+
+def _tier_for(model: str | None) -> str:
+    """Map a --model value (alias or full id) to a pricing tier.
+
+    Defaults to 'sonnet' for anything unrecognised, matching the router's
+    fallthrough tier.
+    """
+    m = (model or "").lower()
+    if "haiku" in m:
+        return "haiku"
+    if "opus" in m:
+        return "opus"
+    return "sonnet"
+
+
+def format_estimate(input_tokens: int, model: str | None) -> str:
+    """One-line pre-flight cost estimate for --estimate.
+
+    Prices input tokens at the resolved model's tier. Output tokens are
+    unknown before the call, so they're excluded and the line says so.
+    """
+    tier = _tier_for(model)
+    cost = (input_tokens / 1_000_000) * _INPUT_PRICE_PER_M[tier]
+    label = model or tier
+    return (f"~{input_tokens:,} input tokens | model: {label} | "
+            f"est. input cost ${cost:.4f} (output billed separately)")
+
+
 def format_token_info(token_count: int, is_code: bool = False) -> str:
     """Format token estimate with cost and warnings."""
     cost = estimate_cost(token_count)

@@ -623,7 +623,7 @@ def _augment_argv(
 # we'll recognise *before* the prose blob; everything after the last structural
 # token is the user's prompt, taken verbatim to end-of-line.
 _BARE_FLAGS = {
-    "--dry-run", "--no-cache", "--verbose", "--json",
+    "--dry-run", "--estimate", "--no-cache", "--verbose", "--json",
     "--feedback", "--agentic", "--help", "-h", "-v", "--version",
 }
 _VALUE_FLAGS = {"--model", "--session-id", "--resume", "-f", "--file"}

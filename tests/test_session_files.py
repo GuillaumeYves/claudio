@@ -73,6 +73,39 @@ def test_empty_content_is_skipped():
     assert session_files._load("sess-1")["files"] == {}
 
 
+# ---- changed_since_seen ------------------------------------------------
+
+def test_changed_since_seen_flags_edited_file():
+    session_files.mark_files_seen("sess-1", [_fa("main.py", "x = 1\n")])
+    changed = session_files.changed_since_seen("sess-1", [_fa("main.py", "x = 2\n")])
+    assert ("main.py", None) in changed
+
+
+def test_changed_since_seen_ignores_unchanged_file():
+    session_files.mark_files_seen("sess-1", [_fa("main.py", "x = 1\n")])
+    changed = session_files.changed_since_seen("sess-1", [_fa("main.py", "x = 1\n")])
+    assert changed == set()
+
+
+def test_changed_since_seen_ignores_never_seen_file():
+    # A file the session has never recorded is new, not "changed".
+    changed = session_files.changed_since_seen("sess-1", [_fa("main.py", "x = 1\n")])
+    assert changed == set()
+
+
+def test_changed_since_seen_does_not_mutate_record():
+    session_files.mark_files_seen("sess-1", [_fa("main.py", "x = 1\n")])
+    session_files.changed_since_seen("sess-1", [_fa("main.py", "x = 2\n")])
+    # The stored hash must still be the original — detection is read-only, so
+    # a later mark_files_seen is what actually advances the recorded version.
+    unchanged = session_files.mark_files_seen("sess-1", [_fa("main.py", "x = 1\n")])
+    assert ("main.py", None) in unchanged
+
+
+def test_changed_since_seen_no_session_id_is_empty():
+    assert session_files.changed_since_seen(None, [_fa("main.py", "x")]) == set()
+
+
 # ---- clear -------------------------------------------------------------
 
 def test_clear_removes_session_file():

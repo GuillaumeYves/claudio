@@ -13,11 +13,11 @@ Usage:
 
 import sys
 
-from claudio import session_files
 from claudio.pipeline.process import process
 from claudio.commands.run_prompt import (
     collect_clarification_answer,
     execute_with_tracking,
+    mark_session_files,
     parse_need_clarification,
     parse_need_context,
     parse_needs_build,
@@ -93,6 +93,8 @@ def execute(raw_args: list[str], ctx: dict) -> int:
 
     for err in parsed.errors:
         out.warn(err)
+    if parsed.suggestion:
+        out.info(f"[claudio] try:  ask {parsed.suggestion}")
 
     if not parsed.prompt and not parsed.files:
         out.error("Provide a question and/or @file attachments")
@@ -182,14 +184,10 @@ def execute(raw_args: list[str], ctx: dict) -> int:
 
 def _process_and_execute(files, task, config, ctx, out, allow_feedback):
     """Single process+execute pass. Extracted so retry can call it again."""
-    # Per-session file dedup — Claude already has unchanged @files from
-    # prior turns; substitute a marker instead of re-sending bytes.
-    session_id = ctx.get("session_id") or ctx.get("resume")
-    if files and session_id:
-        unchanged = session_files.mark_files_seen(session_id, files)
-        for fa in files:
-            if (fa.path, fa.lines) in unchanged:
-                fa.unchanged = True
+    # Per-session file dedup (+ stale-file warning): Claude already has
+    # unchanged @files from prior turns; substitute a marker instead of
+    # re-sending bytes, and warn on any file edited since it was last seen.
+    mark_session_files(ctx, files, out)
 
     file_context = format_file_context(files)
 

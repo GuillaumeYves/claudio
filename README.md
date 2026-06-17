@@ -489,6 +489,7 @@ claudio run --json
 | Flag                  | Description                                                                     |
 | --------------------- | ------------------------------------------------------------------------------- |
 | `--dry-run`         | Print the optimized prompt without calling Claude                               |
+| `--estimate`        | Print token count + projected input cost, then exit without calling Claude       |
 | `--no-cache`        | Bypass response cache for this request                                          |
 | `--verbose`         | Show token count, compression ratio, model, and metadata                        |
 | `--json`            | Output results as structured JSON                                               |

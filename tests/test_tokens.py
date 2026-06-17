@@ -80,3 +80,33 @@ def test_format_token_info_still_works():
 def test_format_token_info_warns_on_large():
     s = tokens.format_token_info(40_000)
     assert "WARNING" in s.upper()
+
+
+# ---- per-model pricing / --estimate formatting -------------------------
+
+def test_tier_for_maps_aliases_and_ids():
+    assert tokens._tier_for("haiku") == "haiku"
+    assert tokens._tier_for("opus") == "opus"
+    assert tokens._tier_for("claude-opus-4-8") == "opus"
+    assert tokens._tier_for("sonnet") == "sonnet"
+    # Unknown / None default to the router's fallthrough tier.
+    assert tokens._tier_for(None) == "sonnet"
+    assert tokens._tier_for("something-weird") == "sonnet"
+
+
+def test_format_estimate_prices_by_tier():
+    # 1M tokens at the opus tier price ($15/M) -> $15.0000.
+    s = tokens.format_estimate(1_000_000, "opus")
+    assert "1,000,000 input tokens" in s
+    assert "model: opus" in s
+    assert "$15.0000" in s
+    assert "output billed separately" in s
+
+
+def test_format_estimate_opus_costs_more_than_haiku():
+    def _cost(line: str) -> float:
+        return float(line.split("$")[1].split(" ")[0])
+
+    assert _cost(tokens.format_estimate(50_000, "opus")) > _cost(
+        tokens.format_estimate(50_000, "haiku")
+    )

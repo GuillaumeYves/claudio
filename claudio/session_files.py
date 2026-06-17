@@ -111,6 +111,36 @@ def mark_files_seen(session_id: str | None, file_attachments) -> set[tuple[str, 
     return unchanged
 
 
+def changed_since_seen(
+    session_id: str | None, file_attachments
+) -> set[tuple[str, str | None]]:
+    """Return attachments this session saw before but whose content differs now.
+
+    Read-only — unlike mark_files_seen it does NOT update the stored hashes.
+    Call this *before* mark_files_seen to detect files the user edited between
+    turns, so a resumed session can warn that the attached body no longer
+    matches what Claude last saw. A file the session has never recorded is
+    not "changed" (it's simply new) and is excluded.
+
+    Best-effort: a missing/corrupt session record yields an empty set.
+    """
+    if not session_id:
+        return set()
+
+    files_record = _load(session_id)["files"]
+    changed: set[tuple[str, str | None]] = set()
+    for fa in file_attachments:
+        content = getattr(fa, "content", "") or ""
+        if not content:
+            continue
+        path = getattr(fa, "path", "")
+        lines = getattr(fa, "lines", None)
+        prev = files_record.get(_key(path, lines))
+        if prev is not None and prev != _content_hash(content):
+            changed.add((path, lines))
+    return changed
+
+
 def clear(session_id: str | None) -> None:
     """Forget every file the session has been shown. Used by /fresh."""
     if not session_id:

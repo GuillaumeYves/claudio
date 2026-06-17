@@ -45,6 +45,10 @@ class ParsedArgs:
     prompt: str  # the user's description/question
     files: list[FileAttachment] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    # When the args were out of order, the same tokens reassembled into the
+    # canonical mode > @files > description form, for a "did you mean" hint.
+    # None when parsing was clean. Excludes the leading command word.
+    suggestion: str | None = None
 
 
 def _normalize_file_flags(raw_args: list[str]) -> list[str]:
@@ -64,6 +68,45 @@ def _normalize_file_flags(raw_args: list[str]) -> list[str]:
             out.append(raw_args[i])
             i += 1
     return out
+
+
+def _suggest_order(raw_args: list[str], valid_modes: dict[str, str]) -> str | None:
+    """Reassemble out-of-order args into the canonical form for a hint.
+
+    Best-effort: takes the first recognised mode flag, every @file (with any
+    line range immediately following it), and treats everything else as the
+    description — then emits them in `mode > @files > "description"` order.
+    Returns None when there's nothing meaningful to suggest. Expects args that
+    have already been through _normalize_file_flags (so -f/--file are @paths).
+    """
+    mode_flag: str | None = None
+    file_tokens: list[str] = []
+    text_parts: list[str] = []
+
+    i = 0
+    while i < len(raw_args):
+        arg = raw_args[i]
+        if arg.startswith("-") and arg.lstrip("-") in valid_modes:
+            if mode_flag is None:
+                mode_flag = arg
+        elif arg.startswith("@"):
+            file_tokens.append(arg)
+            if i + 1 < len(raw_args) and LINE_RANGE_RE.match(raw_args[i + 1]):
+                file_tokens.append(raw_args[i + 1])
+                i += 1
+        elif LINE_RANGE_RE.match(arg):
+            pass  # stray line range with no file to attach to — drop it
+        else:
+            text_parts.append(arg)
+        i += 1
+
+    parts: list[str] = []
+    if mode_flag:
+        parts.append(mode_flag)
+    parts.extend(file_tokens)
+    if text_parts:
+        parts.append('"' + " ".join(text_parts) + '"')
+    return " ".join(parts) if parts else None
 
 
 def parse_command_args(raw_args: list[str], valid_modes: dict[str, str]) -> ParsedArgs:
@@ -142,11 +185,15 @@ def parse_command_args(raw_args: list[str], valid_modes: dict[str, str]) -> Pars
 
     prompt = " ".join(prompt_parts)
 
+    # Only offer a corrected-order hint when the args were actually rejected.
+    suggestion = _suggest_order(raw_args, valid_modes) if errors else None
+
     return ParsedArgs(
         mode=mode or "",
         prompt=prompt,
         files=files,
         errors=errors,
+        suggestion=suggestion,
     )
 
 

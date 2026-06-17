@@ -43,6 +43,7 @@ File attachments (max 10):
 
 Global flags:
     --dry-run           Show optimized prompt without sending to Claude
+    --estimate          Show token count + projected input cost, then exit
     --no-cache          Bypass response cache for this request
     --verbose           Show token estimates and pipeline details
     --json              Output in JSON format
@@ -73,6 +74,7 @@ def _pop_global_flags(argv: list[str]) -> tuple[list[str], dict]:
     """Extract global flags from argv, return (remaining, flags dict)."""
     flags = {
         "dry_run": False,
+        "estimate": False,
         "no_cache": False,
         "verbose": False,
         "json_output": False,
@@ -90,6 +92,8 @@ def _pop_global_flags(argv: list[str]) -> tuple[list[str], dict]:
 
         if arg == "--dry-run":
             flags["dry_run"] = True
+        elif arg == "--estimate":
+            flags["estimate"] = True
         elif arg == "--no-cache":
             flags["no_cache"] = True
         elif arg == "--verbose":

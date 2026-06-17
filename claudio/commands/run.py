@@ -23,9 +23,8 @@ import json
 import sys
 from pathlib import Path
 
-from claudio import session_files
 from claudio.pipeline.process import process
-from claudio.commands.run_prompt import execute_with_tracking
+from claudio.commands.run_prompt import execute_with_tracking, mark_session_files
 from claudio.utils.tokens import estimate_tokens, format_token_info
 from claudio.utils.args import (
     parse_command_args,
@@ -54,6 +53,8 @@ def execute(raw_args: list[str], ctx: dict) -> int:
 
     for err in parsed.errors:
         out.warn(err)
+    if parsed.suggestion:
+        out.info(f"[claudio] try:  run {parsed.suggestion}")
 
     # Prompt text is ignored for run — warn if provided
     if parsed.prompt.strip():
@@ -107,13 +108,9 @@ def execute(raw_args: list[str], ctx: dict) -> int:
             return 1
         # In a serial plan with auto-chain, the same @file appears in every
         # task's context. Mark unchanged ones so format_file_context emits
-        # the compact marker from task 2 onwards.
-        session_id = ctx.get("session_id") or ctx.get("resume")
-        if session_id:
-            unchanged = session_files.mark_files_seen(session_id, parsed.files)
-            for fa in parsed.files:
-                if (fa.path, fa.lines) in unchanged:
-                    fa.unchanged = True
+        # the compact marker from task 2 onwards (and warn on any edited
+        # between runs).
+        mark_session_files(ctx, parsed.files, out)
         extra_context = format_file_context(parsed.files)
 
     # Show plan summary and confirm
@@ -185,7 +182,9 @@ def _run_serial(tasks: list[dict], extra_context: str, ctx: dict, out: Output) -
 
         results.append({"task": task_name, "response": response or ""})
 
-        if not ctx["json_output"]:
+        # --estimate returns None per task (priced, not executed); the
+        # estimate line is already printed, so skip the empty result section.
+        if not ctx["json_output"] and not ctx.get("estimate"):
             print(f"\n--- {task_name} ---")
             print(response or "")
             print()

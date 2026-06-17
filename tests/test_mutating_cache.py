@@ -75,6 +75,27 @@ def test_mutating_run_ignores_existing_cache_entry(monkeypatch):
     assert len(calls) == 1
 
 
+def test_estimate_short_circuits_before_executor(monkeypatch):
+    calls: list[dict] = []
+
+    def fake_execute(prompt, **kwargs):
+        calls.append(kwargs)
+        return ("should never run", True)
+
+    monkeypatch.setattr(run_prompt, "execute_prompt", fake_execute)
+
+    out = Output()
+    result = run_prompt.execute_with_tracking(
+        "PROMPT", _ctx(estimate=True), out, "ask", "question",
+    )
+
+    # --estimate prices the request and returns without calling Claude,
+    # caching nothing.
+    assert result is None
+    assert calls == []
+    assert cache.cache_get("PROMPT") is None
+
+
 def test_readonly_run_still_caches(monkeypatch):
     calls: list[dict] = []
 

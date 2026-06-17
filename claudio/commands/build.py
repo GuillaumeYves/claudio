@@ -13,13 +13,13 @@ import os
 import subprocess
 import sys
 
-from claudio import session_files
 from claudio.config import permission_posture, posture_permission_mode
 from claudio.pipeline.process import process
 from claudio.commands.run_prompt import (
     _MUTATING_PERMISSION_MODES,
     collect_clarification_answer,
     execute_with_tracking,
+    mark_session_files,
     parse_need_clarification,
     parse_need_context,
 )
@@ -93,6 +93,8 @@ def execute(raw_args: list[str], ctx: dict) -> int:
 
     for err in parsed.errors:
         out.warn(err)
+    if parsed.suggestion:
+        out.info(f"[claudio] try:  build {parsed.suggestion}")
 
     if not parsed.prompt and not parsed.files:
         out.error("Provide a description and/or @file attachments")
@@ -224,15 +226,11 @@ def _confirm_build_if_needed(files, user_prompt, ctx, out) -> bool:
 
 def _process_and_execute(files, task, mode, config, ctx, out, allow_feedback,
                          permission_mode=None):
-    # Mark which files Claude has already seen this session so we can swap
-    # in a compact <file unchanged="true"/> marker instead of re-sending
-    # the full body. Uses --session-id or --resume from ctx as the key.
-    session_id = ctx.get("session_id") or ctx.get("resume")
-    if files and session_id:
-        unchanged = session_files.mark_files_seen(session_id, files)
-        for fa in files:
-            if (fa.path, fa.lines) in unchanged:
-                fa.unchanged = True
+    # Mark which files Claude has already seen this session so we can swap in a
+    # compact <file unchanged="true"/> marker instead of re-sending the full
+    # body, and warn on any file edited since it was last seen. Keys off
+    # --session-id or --resume from ctx.
+    mark_session_files(ctx, files, out)
 
     file_context = format_file_context(files)
 

@@ -7,13 +7,14 @@ stats, model-selection, and session behavior.
 import re
 import sys
 
+from claudio import session_files
 from claudio.cache import cache_get, cache_put
 from claudio.config import load_config
 from claudio.executor import execute_prompt
 from claudio.usage import log_request
 from claudio.utils.model_router import pick_model
 from claudio.utils.output import Output
-from claudio.utils.tokens import estimate_tokens
+from claudio.utils.tokens import estimate_tokens, format_estimate
 
 
 # Signal pattern for the two-way context channel. Claude is instructed (via
@@ -132,6 +133,32 @@ def parse_need_context(response: str) -> list[tuple[str, str, str]] | None:
     return [(file, lines, reason or "") for file, lines, reason in matches]
 
 
+def mark_session_files(ctx: dict, files, out: Output) -> None:
+    """Per-session @file dedup + stale-file warning, shared by ask/build/run.
+
+    For each attached file the current session has already seen:
+      - content unchanged -> flag it so format_file_context collapses it to a
+        compact marker instead of re-sending the body;
+      - content changed since last seen -> warn the user (the new body IS
+        re-sent, so Claude never reasons on stale code — the warning is
+        informational, addressing the "resume can serve stale code" gap).
+
+    No-op without files or a session key: one-shot calls with no --session-id
+    / --resume keep re-sending everything, exactly as before.
+    """
+    session_id = ctx.get("session_id") or ctx.get("resume")
+    if not (files and session_id):
+        return
+    for path, lines in session_files.changed_since_seen(session_id, files):
+        loc = f"{path} lines {lines}" if lines else path
+        out.warn(f"[claudio] {loc} changed since this session last saw it "
+                 f"— re-sending the new version")
+    unchanged = session_files.mark_files_seen(session_id, files)
+    for fa in files:
+        if (fa.path, fa.lines) in unchanged:
+            fa.unchanged = True
+
+
 def resolve_model(ctx: dict, intent: str, input_tokens: int, cmd: str = "") -> str | None:
     """Resolve the model to use for this call.
 
@@ -206,6 +233,14 @@ def execute_with_tracking(
         from claudio.config import permission_posture
         mode_label = permission_mode or "default"
         out.info(f"[claudio] permission mode: {mode_label} (posture: {permission_posture()})")
+
+    # --estimate -- price the request and stop before calling Claude. Like
+    # --dry-run, but reports token count + projected input cost instead of the
+    # raw prompt. Takes precedence over --dry-run when both are set: the user
+    # asked for the number, not the text.
+    if ctx.get("estimate"):
+        out.info(f"[claudio] estimate: {format_estimate(input_tokens, model)}")
+        return None
 
     # Dry run -- show prompt, log nothing
     if ctx["dry_run"]:
