@@ -29,14 +29,21 @@ def log_request(
     input_tokens: int,
     output_tokens: int = 500,
     cached: bool = False,
+    model: str | None = None,
 ) -> None:
-    """Log a single request to usage history."""
-    cost = 0.0 if cached else estimate_cost(input_tokens, output_tokens)
+    """Log a single request to usage history.
+
+    `model` prices the entry at the right tier (opus/sonnet/haiku) instead of
+    assuming Sonnet — so `claudio stats` reflects what builds (Opus-floored)
+    actually cost. Stored on the entry too for transparency.
+    """
+    cost = 0.0 if cached else estimate_cost(input_tokens, output_tokens, model=model)
 
     entry = {
         "ts": time.time(),
         "cmd": cmd,
         "mode": mode,
+        "model": model,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "cost": round(cost, 6),

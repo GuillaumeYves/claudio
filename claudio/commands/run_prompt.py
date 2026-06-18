@@ -239,7 +239,7 @@ def execute_with_tracking(
     # raw prompt. Takes precedence over --dry-run when both are set: the user
     # asked for the number, not the text.
     if ctx.get("estimate"):
-        out.info(f"[claudio] estimate: {format_estimate(input_tokens, model)}")
+        out.info(f"estimate: {format_estimate(input_tokens, model)}")
         return None
 
     # Dry run -- show prompt, log nothing
@@ -257,7 +257,7 @@ def execute_with_tracking(
         cached = cache_get(prompt)
         if cached is not None:
             out.info("[cache hit] Returning cached response")
-            log_request(cmd, mode, input_tokens, cached=True)
+            log_request(cmd, mode, input_tokens, cached=True, model=model)
             out.result(cached, metadata=metadata if ctx["verbose"] else None)
             return cached
 
@@ -278,7 +278,8 @@ def execute_with_tracking(
 
     # Log usage
     output_tokens = estimate_tokens(response)
-    log_request(cmd, mode, input_tokens, output_tokens=output_tokens, cached=False)
+    log_request(cmd, mode, input_tokens, output_tokens=output_tokens,
+                cached=False, model=model)
 
     # When the executor streamed text live, the response is already on the
     # user's screen — don't print it again. We still want verbose metadata

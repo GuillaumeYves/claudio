@@ -29,6 +29,12 @@ dependencies = [
     "prompt_toolkit>=3.0",
 ]
 
+[project.optional-dependencies]
+# tiktoken gives BPE-based token counts (closer to Claude than the char-density
+# heuristic, though still an approximation — it's OpenAI's BPE). Optional so the
+# base install stays dependency-light: `pip install claudio-cli[tokens]`.
+tokens = ["tiktoken>=0.5"]
+
 [project.urls]
 Homepage = "https://github.com/GuillaumeYves/claudio"
 Repository = "https://github.com/GuillaumeYves/claudio"

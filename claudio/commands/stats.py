@@ -63,3 +63,12 @@ def _print_stats(stats: dict) -> None:
 
     if all_time["requests"] == 0:
         print("\n  No usage recorded yet. Run a command to start tracking.")
+        return
+
+    # Accuracy caveat: costs are estimates from local token counts, not billed
+    # amounts. Name the basis so the figures aren't mistaken for an invoice.
+    from claudio.utils.tokens import counting_method, PRICING_LAST_UPDATED
+    basis = counting_method()
+    print(f"\n  Estimates only - {basis} token counts, prices as of {PRICING_LAST_UPDATED}.")
+    if basis != "tiktoken":
+        print("  Install `claudio-cli[tokens]` for closer (BPE) counts.")

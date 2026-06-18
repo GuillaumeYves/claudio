@@ -27,6 +27,16 @@ The premise is simple: **Claude doesn't need to change. Your inputs do.**
 pip install claudio-cli
 ```
 
+For closer token counts (BPE via tiktoken, still an approximation of Claude's
+tokenizer) used by `--estimate`, `--verbose`, and `stats`:
+
+```bash
+pip install "claudio-cli[tokens]"
+```
+
+Without it, claudio falls back to a chars-per-token heuristic and labels every
+estimate accordingly.
+
 ### Option 2: Source
 
 ```bash

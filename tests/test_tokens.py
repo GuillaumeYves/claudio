@@ -95,11 +95,11 @@ def test_tier_for_maps_aliases_and_ids():
 
 
 def test_format_estimate_prices_by_tier():
-    # 1M tokens at the opus tier price ($15/M) -> $15.0000.
+    # 1M tokens at the opus input price ($5/M) -> $5.0000.
     s = tokens.format_estimate(1_000_000, "opus")
     assert "1,000,000 input tokens" in s
     assert "model: opus" in s
-    assert "$15.0000" in s
+    assert "$5.0000" in s
     assert "output billed separately" in s
 
 
@@ -110,3 +110,29 @@ def test_format_estimate_opus_costs_more_than_haiku():
     assert _cost(tokens.format_estimate(50_000, "opus")) > _cost(
         tokens.format_estimate(50_000, "haiku")
     )
+
+
+def test_pricing_table_matches_published_rates():
+    # Single source of truth — guard the actual numbers so a stale edit is caught.
+    assert tokens._PRICING_PER_M["opus"] == {"input": 5.00, "output": 25.00}
+    assert tokens._PRICING_PER_M["sonnet"] == {"input": 3.00, "output": 15.00}
+    assert tokens._PRICING_PER_M["haiku"] == {"input": 1.00, "output": 5.00}
+
+
+def test_estimate_cost_prices_by_model():
+    # 1M in + 1M out: opus = $5 + $25 = $30; default (sonnet) = $3 + $15 = $18.
+    assert tokens.estimate_cost(1_000_000, 1_000_000, model="opus") == 30.00
+    assert tokens.estimate_cost(1_000_000, 1_000_000) == 18.00
+    assert tokens.estimate_cost(1_000_000, 1_000_000, model="claude-haiku-4-5") == 6.00
+
+
+def test_estimate_and_token_info_name_the_counting_method(monkeypatch):
+    monkeypatch.setattr(tokens, "_get_bpe_encoder", lambda: object())
+    assert tokens.counting_method() == "tiktoken"
+    assert "tiktoken" in tokens.format_estimate(1000, "opus")
+    assert "tiktoken" in tokens.format_token_info(1000)
+
+    monkeypatch.setattr(tokens, "_get_bpe_encoder", lambda: None)
+    assert tokens.counting_method() == "heuristic"
+    s = tokens.format_estimate(1000, "opus")
+    assert "heuristic" in s and "rough count" in s
