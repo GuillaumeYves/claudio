@@ -16,6 +16,8 @@ from claudio.utils.colors import CYAN, GREEN, RED, YELLOW, colored
 from claudio.utils.markdown import (
     _term_width,
     _wrap_with_indent,
+)
+from claudio.utils.markdown import (
     render as render_markdown,
 )
 

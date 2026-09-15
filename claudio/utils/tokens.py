@@ -19,21 +19,24 @@ CHARS_PER_TOKEN_TEXT = 4.0
 CHARS_PER_TOKEN_CODE = 3.0
 
 # Single source of truth for every dollar figure claudio prints (--estimate,
-# stats, --verbose). USD per 1M tokens, by model tier. When Anthropic changes
-# pricing, edit this table and bump PRICING_LAST_UPDATED — nothing else hardcodes
-# a rate. Tiers map from a --model value via _tier_for().
-#   Opus 4.8: $5 / $25    Sonnet 4.6: $3 / $15    Haiku 4.5: $1 / $5
-PRICING_LAST_UPDATED = "2026-06-04"
+# stats, --verbose) when billed figures aren't available. USD per 1M tokens, by
+# model tier. When Anthropic changes pricing, edit this table and bump
+# PRICING_LAST_UPDATED — nothing else hardcodes a rate. Tiers map from a --model
+# value via _tier_for().
+#   Fable 5.1: $10 / $50   Opus 5: $5 / $25
+#   Sonnet 5:  $2 / $10    Haiku 4.5: $1 / $5
+PRICING_LAST_UPDATED = "2026-09-15"
 _PRICING_PER_M = {
     "haiku":  {"input": 1.00, "output": 5.00},
-    "sonnet": {"input": 3.00, "output": 15.00},
+    "sonnet": {"input": 2.00, "output": 10.00},
     "opus":   {"input": 5.00, "output": 25.00},
+    "fable":  {"input": 10.00, "output": 50.00},
 }
 DEFAULT_TIER = "sonnet"  # used when no model is known / unrecognised
 
 # Thresholds
 WARN_TOKEN_THRESHOLD = 8_000   # Warn if input exceeds this
-LARGE_TOKEN_THRESHOLD = 32_000  # Strongly suggest compression
+LARGE_TOKEN_THRESHOLD = 32_000  # Strongly suggest narrowing scope (--lines)
 
 
 _BPE_ENCODER = None
@@ -84,6 +87,12 @@ def _tier_for(model: str | None) -> str:
     fallthrough tier.
     """
     m = (model or "").lower()
+    # `fable` first: it is the priciest tier by a wide margin ($10/$50), so a
+    # missed match here understates cost 5x — the dangerous direction to be
+    # wrong in. claudio never *routes* to fable (see model_router); it only
+    # shows up when the user pins it with --model, and it must price right.
+    if "fable" in m:
+        return "fable"
     if "haiku" in m:
         return "haiku"
     if "opus" in m:
@@ -97,7 +106,7 @@ def estimate_cost(input_tokens: int, output_tokens: int = 500,
                   model: str | None = None) -> float:
     """Estimate cost in USD for a request, priced at `model`'s tier.
 
-    `model` may be an alias ('opus') or a full id ('claude-opus-4-8'); when
+    `model` may be an alias ('opus') or a full id ('claude-opus-5'); when
     omitted, prices at DEFAULT_TIER so existing callers keep their old
     Sonnet-rate behaviour. Output defaults to a 500-token guess for callers
     that don't yet know the real length.
@@ -146,9 +155,9 @@ def format_token_info(token_count: int, is_code: bool = False) -> str:
     parts = [f"~{token_count:,} tokens ({counting_method()}, est. ${cost:.4f})"]
 
     if token_count > LARGE_TOKEN_THRESHOLD:
-        parts.append("WARNING: Large input — consider using --lines or --scope to reduce context")
+        parts.append("WARNING: Large input — consider attaching narrower line ranges (@file -START-END) to cut cost")
     elif token_count > WARN_TOKEN_THRESHOLD:
-        parts.append("Note: Moderately large input — compression applied")
+        parts.append("Note: Moderately large input — sent in full")
 
     return " | ".join(parts)
 

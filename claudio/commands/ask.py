@@ -13,7 +13,6 @@ Usage:
 
 import sys
 
-from claudio.pipeline.process import process
 from claudio.commands.run_prompt import (
     collect_clarification_answer,
     execute_with_tracking,
@@ -22,10 +21,11 @@ from claudio.commands.run_prompt import (
     parse_need_context,
     parse_needs_build,
 )
+from claudio.pipeline.process import process
 from claudio.utils.args import (
+    format_file_context,
     parse_command_args,
     resolve_file_attachments,
-    format_file_context,
 )
 from claudio.utils.output import Output
 from claudio.utils.tokens import format_token_info
@@ -94,7 +94,7 @@ def execute(raw_args: list[str], ctx: dict) -> int:
     for err in parsed.errors:
         out.warn(err)
     if parsed.suggestion:
-        out.info(f"[claudio] try:  ask {parsed.suggestion}")
+        out.info(f"try:  ask {parsed.suggestion}")
 
     if not parsed.prompt and not parsed.files:
         out.error("Provide a question and/or @file attachments")
@@ -117,8 +117,9 @@ def execute(raw_args: list[str], ctx: dict) -> int:
     else:
         task = parsed.prompt
 
-    # Feedback channel: only meaningful when files are attached (context may
-    # have been compressed). Opt-in via --feedback.
+    # Feedback channel: only meaningful when files are attached (e.g. you
+    # attached a narrow line range and Claude needs adjacent lines). Opt-in
+    # via --feedback.
     allow_feedback = bool(ctx.get("feedback") and parsed.files)
 
     response = _process_and_execute(
@@ -168,7 +169,7 @@ def execute(raw_args: list[str], ctx: dict) -> int:
                 if _expand_file_range(parsed.files, path, lines):
                     expanded.append(f"{path} lines {lines}" + (f" — {reason}" if reason else ""))
             if expanded:
-                out.info("[claudio] Claude requested more context: "
+                out.info("Claude requested more context: "
                          + "; ".join(expanded) + ". Retrying.")
                 _process_and_execute(
                     files=parsed.files,
@@ -205,9 +206,9 @@ def _process_and_execute(files, task, config, ctx, out, allow_feedback):
     )
 
     if ctx["verbose"]:
-        out.info(format_token_info(result.compressed_tokens))
+        out.info(format_token_info(result.sent_tokens))
         if result.tokens_saved > 0:
-            out.info(f"Saved ~{result.tokens_saved:,} tokens via compression")
+            out.info(f"Saved ~{result.tokens_saved:,} tokens via noise filtering")
 
     return execute_with_tracking(
         prompt=result.prompt,
@@ -217,6 +218,8 @@ def _process_and_execute(files, task, config, ctx, out, allow_feedback):
         mode=_mode_for(config),
         intent=config["intent"],
         metadata=result.metadata,
+        user_prompt=task,
+        spec_files=files,
     )
 
 
@@ -242,7 +245,7 @@ def _offer_build_switch(mode, reason, files, user_prompt, ctx, out):
 
     if ctx.get("json_output") or not sys.stdin.isatty():
         files_part = (" ".join(fa.path for fa in files) + " ") if files else ""
-        out.info(f'[claudio] Re-run in build mode:  build {flag} {files_part}"{user_prompt}"')
+        out.info(f'Re-run in build mode:  build {flag} {files_part}"{user_prompt}"')
         return
 
     try:
@@ -253,7 +256,7 @@ def _offer_build_switch(mode, reason, files, user_prompt, ctx, out):
         sys.stderr.write("\n")
         return
     if answer not in ("", "y", "yes"):
-        out.info("[claudio] Staying in ask mode.")
+        out.info("Staying in ask mode.")
         return
 
     # Lazy import avoids a build <-> ask import cycle at module load.
@@ -272,6 +275,11 @@ def _offer_build_switch(mode, reason, files, user_prompt, ctx, out):
         "session_id": None,
     }
     permission_mode = build_cmd._build_permission_mode(build_ctx)
+    # Snapshot before the escalated build edits anything, so /undo covers it too.
+    from claudio import build_snapshot
+    from claudio.commands.run_prompt import _MUTATING_PERMISSION_MODES
+    if permission_mode in _MUTATING_PERMISSION_MODES and files:
+        build_snapshot.snapshot([fa.path for fa in files])
     build_cmd._process_and_execute(
         files=files,
         task=build_task,

@@ -1,9 +1,11 @@
 """Tests for the streaming event parser.
 
 _parse_stream_event returns (kind, payload):
-  ('text', text)  -> stream-rendered response
-  ('tool', label) -> tool_use surfaced via spinner / breadcrumb
-  ('', '')        -> noise (system, message_stop, malformed, etc.)
+  ('delta', text)  -> a streamed token run (--include-partial-messages)
+  ('text', text)   -> a complete assistant content-block snapshot
+  ('tool', label)  -> tool_use surfaced via spinner / breadcrumb
+  ('usage', usage) -> billed CallUsage from the terminal result event
+  ('', '')         -> noise (system, message_stop, malformed, etc.)
 """
 
 from __future__ import annotations
@@ -15,7 +17,6 @@ from claudio.executor import (
     _summarise_tool_input,
     _tool_status_label,
 )
-
 
 # ---- claude CLI assistant-snapshot format (primary path) ---------------
 
@@ -137,12 +138,12 @@ def test_skips_message_stop():
 
 # ---- fallbacks for other event shapes ---------------------------------
 
-def test_falls_back_to_content_block_delta():
+def test_bare_content_block_delta_is_a_delta():
     event = json.dumps({
         "type": "content_block_delta",
         "delta": {"type": "text_delta", "text": "hi "},
     })
-    assert _parse_stream_event(event) == ("text", "hi ")
+    assert _parse_stream_event(event) == ("delta", "hi ")
 
 
 def test_falls_back_to_simple_text_event():

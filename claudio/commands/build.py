@@ -13,8 +13,7 @@ import os
 import subprocess
 import sys
 
-from claudio.config import permission_posture, posture_permission_mode
-from claudio.pipeline.process import process
+from claudio import build_snapshot
 from claudio.commands.run_prompt import (
     _MUTATING_PERMISSION_MODES,
     collect_clarification_answer,
@@ -23,10 +22,12 @@ from claudio.commands.run_prompt import (
     parse_need_clarification,
     parse_need_context,
 )
+from claudio.config import permission_posture, posture_permission_mode
+from claudio.pipeline.process import process
 from claudio.utils.args import (
+    format_file_context,
     parse_command_args,
     resolve_file_attachments,
-    format_file_context,
 )
 from claudio.utils.output import Output
 from claudio.utils.tokens import format_token_info
@@ -94,7 +95,7 @@ def execute(raw_args: list[str], ctx: dict) -> int:
     for err in parsed.errors:
         out.warn(err)
     if parsed.suggestion:
-        out.info(f"[claudio] try:  build {parsed.suggestion}")
+        out.info(f"try:  build {parsed.suggestion}")
 
     if not parsed.prompt and not parsed.files:
         out.error("Provide a description and/or @file attachments")
@@ -119,6 +120,13 @@ def execute(raw_args: list[str], ctx: dict) -> int:
     # "confirm" posture: one Y/n gate before we apply anything.
     if not _confirm_build_if_needed(parsed.files, parsed.prompt, ctx, out):
         return 0
+
+    # Snapshot target files before any edit lands, so `/undo` can restore the
+    # pre-build state. Once, here — not inside _process_and_execute, which
+    # re-runs on feedback retries after files are already modified. Only when
+    # this build can actually mutate the filesystem.
+    if permission_mode in _MUTATING_PERMISSION_MODES and parsed.files:
+        build_snapshot.snapshot([fa.path for fa in parsed.files])
 
     response = _process_and_execute(
         files=parsed.files,
@@ -160,7 +168,7 @@ def execute(raw_args: list[str], ctx: dict) -> int:
                 if _expand_file_range(parsed.files, path, lines):
                     expanded.append(f"{path} lines {lines}" + (f" — {reason}" if reason else ""))
             if expanded:
-                out.info("[claudio] Claude requested more context: "
+                out.info("Claude requested more context: "
                          + "; ".join(expanded) + ". Retrying.")
                 _process_and_execute(
                     files=parsed.files,
@@ -220,7 +228,7 @@ def _confirm_build_if_needed(files, user_prompt, ctx, out) -> bool:
         return False
     if answer in ("", "y", "yes"):
         return True
-    out.info("[claudio] Build cancelled.")
+    out.info("Build cancelled.")
     return False
 
 
@@ -245,9 +253,9 @@ def _process_and_execute(files, task, mode, config, ctx, out, allow_feedback,
     )
 
     if ctx["verbose"]:
-        out.info(format_token_info(result.compressed_tokens))
+        out.info(format_token_info(result.sent_tokens))
         if result.tokens_saved > 0:
-            out.info(f"Saved ~{result.tokens_saved:,} tokens via compression")
+            out.info(f"Saved ~{result.tokens_saved:,} tokens via noise filtering")
 
     return execute_with_tracking(
         prompt=result.prompt,
@@ -258,6 +266,8 @@ def _process_and_execute(files, task, mode, config, ctx, out, allow_feedback,
         intent=config["intent"],
         metadata=result.metadata,
         permission_mode=permission_mode,
+        user_prompt=task,
+        spec_files=files,
     )
 
 
@@ -312,3 +322,5 @@ def _show_applied_diff(files, ctx: dict, out, permission_mode) -> None:
         print(diff, file=sys.stderr)
     except UnicodeEncodeError:
         print(diff.encode("utf-8", "replace").decode("ascii", "replace"), file=sys.stderr)
+    if build_snapshot.has_snapshot():
+        out.info("/undo reverts this build")

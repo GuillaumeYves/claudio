@@ -11,11 +11,24 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/GuillaumeYves/claudio" alt="License"></a>
 </p>
 
-**A CLI that sits between you and Claude to reduce token waste, structure your inputs, and make every request cheaper and faster.**
+**A control plane for the `claude` CLI: it makes a request well-specified before it costs anything, and enforces policy on what the answer may do.**
 
-Claudio is not a chatbot. It is not a new model. It is a deterministic preprocessing layer that compresses context, filters noise, and builds structured prompts before anything reaches Claude. The result: you pay less, get more relevant output, and iterate faster.
+Claudio is not a chatbot, not a new model, and — as of 2.0.0 — not a token compressor. It sits in front of the `claude` CLI and owns the decisions that surround a call: whether the request is specified well enough to be worth paying for, which model answers it, how hard that model thinks, what it is allowed to touch, and what the whole thing is permitted to cost.
 
-The premise is simple: **Claude doesn't need to change. Your inputs do.**
+**Why not token reduction?** Because the measurement doesn't support it. A one-line `claudio ask` bills ~24,000 input tokens, of which *your prompt is about one*. The rest is Claude Code's own system prompt, your `CLAUDE.md`, the tool definitions, and prompt-cache traffic — fixed overhead claudio cannot touch from outside. Trimming whitespace from an attached file is rounding error against that. 2.0.0 removed the lossy compression stage entirely, and stopped claiming a percentage off your input.
+
+What actually moves cost per outcome is **policy**, and that is what claudio owns:
+
+| Pillar                                                                              | What it does                                                    |
+| ----------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| **Specification** — pre-flight check, free and local                          | names what a request leaves unpinned *before* you pay for a guess |
+| **Routing** — model tier + `--effort`                                       | the cheapest model and thinking depth that fits the job           |
+| **Accounting** — billed spend ledger                                          | what each request actually cost, and *why* it was expensive       |
+| **Enforcement** — per-call and per-day budgets, permission postures           | hard ceilings and a bounded blast radius, not advice              |
+
+None of these transform your words. The specification check **reports** what's missing and sends your prompt through untouched — silently reshaping a request is the same mistake as the compression stage, one layer up. Attached files are sent **faithfully**, in full, never summarized.
+
+The premise: **Claude doesn't need to change, and neither do your words. The conditions around the call do.**
 
 ---
 
@@ -146,7 +159,7 @@ claudio ask -review @src/auth.py "check for security issues"
 claudio ask -review @src/api/handler.py -120-180 "is this input validation sufficient"
 
 # Ask a question with file context
-claudio ask -question @src/pipeline/process.py "how does the compression stage work"
+claudio ask -question @src/pipeline/process.py "how does the filter stage work"
 
 # Ask without files
 claudio ask -question "what is the difference between asyncio.gather and asyncio.wait"
@@ -188,10 +201,10 @@ claudio run --agentic
 
 **Execution modes:**
 
-| Mode             | How it runs                                                           | When to use                                                   |
-| ---------------- | --------------------------------------------------------------------- | ------------------------------------------------------------- |
-| serial (default) | One `claude --print` per task                                       | Tasks are independent; you want clean per-task output         |
-| `--agentic`    | One session for the whole plan, with `Read`/`Grep`/`Glob` tools | Tasks share reasoning, or Claude should discover files itself |
+| Mode             | How it runs                                                          | When to use                                                   |
+| ---------------- | -------------------------------------------------------------------- | ------------------------------------------------------------- |
+| serial (default) | One`claude --print` per task                                       | Tasks are independent; you want clean per-task output         |
+| `--agentic`    | One session for the whole plan, with`Read`/`Grep`/`Glob` tools | Tasks share reasoning, or Claude should discover files itself |
 
 Agentic mode saves tokens on multi-task plans (no per-task prompt re-ingest) and lets Claude carry insight from task 1 into task 2.
 
@@ -293,18 +306,19 @@ While Claude uses tools (Read, Edit, Grep, Bash, …) the activity surfaces as e
 
 **Slash commands:**
 
-| Command                | Purpose                                                                                          |
-| ---------------------- | ------------------------------------------------------------------------------------------------ |
-| `/help`              | Show available commands                                                                          |
-| `/model NAME`        | Pin a model for the session (`haiku`, `sonnet`, `opus`). `/model auto` resets.           |
-| `/mode CMD MODE`     | Pin a sticky mode (`/mode ask -review`). `/mode` alone shows current; `/mode none` clears. |
-| `/setup`             | Configure the permission posture (what Claude may do on its own)                                 |
-| `/cwd [PATH]`        | Show or change the working directory                                                             |
-| `/clear`             | Clear the screen                                                                                 |
-| `/fresh`             | Start a new conversation (drops Claude's memory + sticky state)                                  |
-| `/session`           | Print the current session id                                                                     |
-| `/stats`             | Shortcut for `claudio stats` inside the REPL                                                   |
-| `/exit` \| `/quit` | Exit (Ctrl-D also works)                                                                         |
+| Command                | Purpose                                                                                           |
+| ---------------------- | ------------------------------------------------------------------------------------------------- |
+| `/help`              | Show available commands                                                                           |
+| `/model NAME`        | Pin a model for the session (`haiku`, `sonnet`, `opus`, `fable`). `/model auto` resets.   |
+| `/mode CMD MODE`     | Pin a sticky mode (`/mode ask -review`). `/mode` alone shows current; `/mode none` clears.  |
+| `/setup`             | Configure the permission posture (what Claude may do on its own)                                  |
+| `/cwd [PATH]`        | Show or change the working directory                                                              |
+| `/clear`             | Clear the screen                                                                                  |
+| `/fresh`             | Start a new conversation (drops Claude's memory + sticky state)                                   |
+| `/session`           | Print the current session id                                                                      |
+| `/undo`              | Revert the files changed by the last build (restores pre-build content; removes files it created) |
+| `/stats`             | Shortcut for`claudio stats` inside the REPL                                                     |
+| `/exit` \| `/quit` | Exit (Ctrl-D also works)                                                                          |
 
 History is stored at `~/.claudio/repl_history` (or `$CLAUDIO_HOME/repl_history`). Errors in one command never kill the session — you stay inside until you exit.
 
@@ -376,9 +390,83 @@ The cache is deterministic: if the file hasn't changed and your prompt is the sa
 
 ---
 
+## Specification Check
+
+Before a request is sent, claudio inspects it **locally and for free** for the
+things that actually degrade an answer — not poor wording, which Claude handles
+well, but missing *specification*: which file, which lines, what must not
+change, what "done" looks like.
+
+```
+$ claudio build -r "simplify"
+[claudio:warn] under-specified request (sending anyway):
+  - no constraint on what the change must preserve
+    try: add what must not change, e.g. "...without altering the public API"
+  - only 1 word(s) of description
+    try: one more clause about the goal usually beats a longer file
+  (--strict-spec turns these into a refusal; --no-spec-check silences them)
+```
+
+Three rules keep it honest:
+
+1. **It never rewrites your prompt.** It reports the gap and sends your words
+   through unchanged. A layer that silently reshapes intent is the same mistake
+   as the lossy compression stage removed in 2.0.0.
+2. **It costs nothing.** Pure local inspection — no model call. A check that
+   needed its own call could never pay for itself on a cheap request.
+3. **It advises by default.** `--strict-spec` (or `strict_spec` in config)
+   promotes findings to a refusal; `--no-spec-check` silences them. Nobody is
+   blocked by surprise.
+
+A well-specified request produces **no output at all** — the check is designed
+around its false-positive rate, because a check that cries wolf gets ignored
+and then protects nothing.
+
+---
+
+## Budgets
+
+Two ceilings, deliberately different in scope:
+
+| Setting                                        | Scope    | Behaviour                                         |
+| ---------------------------------------------- | -------- | ------------------------------------------------- |
+| `--max-budget-usd N`                         | one call | the CLI halts mid-run rather than exceed it       |
+| `daily_budget_usd` / `CLAUDIO_DAILY_BUDGET_USD` | one day  | refuses when spent; **clamps** each call to what's left |
+
+The clamp is what makes the daily cap real. Claudio only regains control
+*after* a call finishes, so a check alone could never stop a single call from
+blowing the day's budget — instead, the remaining allowance is handed to the
+CLI as that call's own ceiling:
+
+```
+$ CLAUDIO_DAILY_BUDGET_USD=0.10 claudio ask -q "..."
+[claudio:warn] daily budget: $0.0864 left of $0.10 — capping this call there
+
+$ CLAUDIO_DAILY_BUDGET_USD=0.01 claudio ask -q "..."
+[claudio:error] daily budget reached: $0.0136 of $0.01 spent today.
+```
+
+An explicit `--max-budget-usd` is respected when it's *tighter* than the daily
+remainder, and can never raise the ceiling above it. A daily cap is only
+meaningful because the ledger records **billed** figures (below) — enforcing it
+against estimates would feel like protection while letting real spend through.
+
+---
+
 ## Cost Tracking
 
-Every request is logged with token estimates and cost. View your usage with:
+Every request is logged with **the figures the `claude` CLI itself reports** —
+what Anthropic actually charged, prompt-cache traffic included. Claudio falls
+back to local estimates only when the CLI reports nothing (a plain-text
+buffered run). `claudio stats` labels which basis it is showing.
+
+Why this matters: a local estimate can only see the prompt claudio composed.
+The real request also carries Claude Code's system prompt, your `CLAUDE.md`,
+every tool definition, and cache reads/writes. A trivial one-line `ask`
+estimates at ~1 token but bills ~24,000 — so estimates read low by orders of
+magnitude, and claudio no longer reports them as if they were the bill.
+
+View your usage with:
 
 ```bash
 claudio stats
@@ -499,12 +587,16 @@ claudio run --json
 | Flag                  | Description                                                                     |
 | --------------------- | ------------------------------------------------------------------------------- |
 | `--dry-run`         | Print the optimized prompt without calling Claude                               |
-| `--estimate`        | Print token count + projected input cost, then exit without calling Claude       |
+| `--estimate`        | Print token count + projected input cost, then exit without calling Claude      |
 | `--no-cache`        | Bypass response cache for this request                                          |
-| `--verbose`         | Show token count, compression ratio, model, and metadata                        |
+| `--verbose`         | Show token count, model, and pipeline metadata                                  |
 | `--json`            | Output results as structured JSON                                               |
-| `--model NAME`      | Override model (`haiku` / `sonnet` / `opus` or full ID)                   |
-| `--session-id UUID` | Start a session with a fixed ID (reusable via `--resume`)                     |
+| `--model NAME`      | Override model (`haiku` / `sonnet` / `opus` / `fable` or full ID)         |
+| `--effort LEVEL`    | Thinking effort: `low` / `medium` / `high` / `xhigh` / `max`               |
+| `--max-budget-usd N` | Hard spend ceiling for this call; the run stops rather than exceed it    |
+| `--strict-spec`     | Refuse an under-specified request instead of warning                       |
+| `--no-spec-check`   | Skip the pre-flight specification check                                    |
+| `--session-id UUID` | Start a session with a fixed ID (reusable via`--resume`)                      |
 | `--resume UUID`     | Resume an existing Claude session (warm prompt cache)                           |
 | `--feedback`        | Let Claude request missing context; auto-retry once with expanded range         |
 | `--agentic`         | (`claudio run` only) Execute the plan in one agentic session with tool access |
@@ -555,11 +647,15 @@ Capped at 6 KB. `<changes>` sits in the *volatile* tail (right before `<task>`) 
 
 ## How It Works
 
-Every input goes through a four-stage pipeline:
+Every input goes through a three-stage pipeline:
 
 ```
-Input --> Filter --> Compress --> Prompt --> Claude
+Input --> Filter --> Prompt --> Claude
 ```
+
+File bodies pass through **faithfully** — the only content-reducing stage is
+noise filtering below (whitespace, boilerplate, log dedup). Nothing is
+summarized or replaced with a map.
 
 ### 1. Filter (intent-aware)
 
@@ -582,15 +678,14 @@ Removes content that wastes tokens:
 
 Comments and docstrings are preserved for `review` and `debug` because that's exactly when they matter most — TODO markers, known-issue notes, and assertion docs are often where the bug lives. For `question`, all docs survive too since they may be what's being asked about.
 
-### 2. Compress
+> **No compression stage.** Through 1.x, files over 300 lines were replaced
+> with a lossy structural map. That was removed in **2.0.0**: it silently
+> traded fidelity for tokens on files you thought you'd attached in full. If a
+> file is too large or costly to send whole, attach a narrower line range
+> (`@file -START-END`) — an explicit choice you make, not a summary claudio
+> makes for you.
 
-Reduces large inputs to structured summaries:
-
-- **Code > 300 lines**: structural map (classes, functions with line numbers) + full import lines (aliases preserved). The body of any symbol named in `<task>` is preserved verbatim in a `target bodies:` section — so asking "refactor `validate_token`" actually shows Claude `validate_token`'s code.
-- **Code < 300 lines**: imports collapsed into a compact summary, code preserved.
-- **Logs > 150 lines**: errors + warnings (capped) + info count + last 15 lines for recency.
-
-### 3. Prompt (XML-tagged, cache-aligned, zero duplication)
+### 2. Prompt (XML-tagged, cache-aligned, zero duplication)
 
 Builds a minimal prompt using XML tags instead of markdown, with the **stable sections first and the variable tail last**:
 
@@ -628,7 +723,7 @@ diff --git a/auth.py ...
 
 **No default padding:** Question-mode (`claudio ask -question`) produces just `<task>your question</task>` -- no constraints, no format instructions, no boilerplate. Claude doesn't need to be told "be concise" on a simple question.
 
-### 4. Execute
+### 3. Execute
 
 Sends to Claude CLI via `claude --print`. In `--dry-run` mode, prints the prompt instead.
 
@@ -664,7 +759,7 @@ Override with `--model haiku|sonnet|opus` (or a full model ID) on any command. `
 
 ### `<need-context>` — data missing
 
-When the compressor's structural map isn't enough, Claude requests specific line ranges:
+When the attached line range is too narrow (e.g. a helper defined just outside the lines you pinned with `@file -START-END`), Claude requests specific line ranges:
 
 ```
 <need-context file="PATH" lines="START-END" reason="..."/>
@@ -708,7 +803,7 @@ For iterative work, reuse a Claude session so the prompt cache stays warm and co
 ```bash
 ID=$(uuidgen)
 claudio ask -question --session-id $ID @src/pipeline.py "walk me through this"
-claudio ask -question --resume $ID "now explain the compression stage"
+claudio ask -question --resume $ID "now explain the model routing"
 claudio ask -question --resume $ID "why XML over JSON in the prompt?"
 ```
 
@@ -716,26 +811,40 @@ claudio ask -question --resume $ID "why XML over JSON in the prompt?"
 
 ---
 
-## Token Savings
+## Where the savings come from
 
-Real measurements from the Claudio codebase itself:
+Since 2.0.0 claudio sends files **faithfully**, so savings do not come from shrinking your code — and, measured honestly, they never mostly did. The fixed harness overhead on every call (system prompt, `CLAUDE.md`, tool definitions, cache traffic) dwarfs anything claudio can trim from your input. What is left are levers that change *whether and how* a call happens:
 
-| Command                                       | Input        | After pipeline | Saved         |
-| --------------------------------------------- | ------------ | -------------- | ------------- |
-| `claudio build -r @filter.py "simplify"`    | 2,844 tokens | 128 tokens     | **96%** |
-| `claudio ask -rv @executor.py "security"`   | 650 tokens   | 80 tokens      | **94%** |
-| `claudio ask -q @process.py "how it works"` | 1,161 tokens | 92 tokens      | **91%** |
-| `claudio ask -d @files.py -28-45 "crash"`   | 209 tokens   | 170 tokens     | **21%** |
-| `claudio ask -q "prompt caching"`           | 1 token      | 9 tokens       | n/a           |
+| Lever                     | What it saves                                                                                             | Applies to                                                                |
+| ------------------------- | --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| **Model routing**   | A`haiku` answer is ~5× cheaper than `opus`; trivial asks never pay opus rates                        | every request, sized/intent-routed                                        |
+| **Response cache**  | An identical prompt returns instantly for**zero** tokens                                            | every repeat (great in iterative sessions)                                |
+| **Effort**          | `--effort low` on the same model costs less than dropping a tier, and often answers as well            | opt-in, per call or via config                                            |
+| **Specification**   | A request that had to be re-asked cost double; the pre-flight check is free and catches it first       | every request (advisory by default)                                       |
+| **Noise filtering** | Trailing whitespace, blank-line runs, license headers, log dedup; on`refactor`, comments/docstrings too | every request (single-digit % typically; more on comment-heavy refactors) |
 
-Small inputs (under 50 lines, no compression needed) see modest savings from comment/whitespace stripping. Large files see 90%+ savings from structural compression. Questions without files add near-zero overhead.
+Two measured points on the Claudio codebase itself (tiktoken BPE):
 
-Use `--verbose` to see estimates on any command:
+| Command                                    | File size | Input  | Sent   | Note                                          |
+| ------------------------------------------ | --------- | ------ | ------ | --------------------------------------------- |
+| `claudio ask -rv @repl.py "security"`    | 963 lines | 11,709 | 11,701 | sent in full — faithful, ~0% shaved          |
+| `claudio build -r @prompt.py "simplify"` | 174 lines | 2,448  | 935    | 62% —`refactor` strips comments/docstrings |
+
+If a file is genuinely too large or costly to send whole, attach a narrower range yourself (`@file -START-END`) — an explicit call, not a summary claudio makes behind your back.
+
+Use `--verbose` to see the pre-flight estimate and, once the call returns,
+what it actually billed:
 
 ```
-[claudio] ~128 tokens (est. $0.0079)
-[claudio] Saved ~2,716 tokens via compression
+[claudio] ~11,701 tokens (tiktoken BPE, est. $0.0585)
+[claudio] model: opus
+[claudio] billed: 36,412 in (19,189 cached) / 1,204 out | $0.1483 | claude-opus-5
 ```
+
+The first line is claudio's pre-flight guess at the prompt it built; the last
+is the CLI's own accounting of the whole request. Expect them to differ — the
+gap is the system prompt, `CLAUDE.md`, tool definitions and cache traffic that
+no local estimate can see.
 
 ---
 
@@ -748,9 +857,15 @@ Claudio drives Claude **headless** (`claude --print`), where there's no mid-run 
 | **Autonomous**               | edit files**and** run shell commands  | `--permission-mode bypassPermissions` |
 | **Edits only** *(default)* | edit files, but not run shell commands      | `--permission-mode acceptEdits`       |
 | **Confirm first**            | edit files after you approve once per build | `acceptEdits` + a `Y/n` gate        |
-| **Preview only**             | nothing — just print the diff              | `--permission-mode default`           |
+| **Preview only**             | nothing — just describe the change         | `--permission-mode plan`              |
 
 Because nothing pauses mid-run, *Confirm first* is a single coarse `Y/n` gate **before** a build starts, not a per-edit prompt.
+
+*Preview only* uses Claude Code's `plan` mode. Earlier versions passed no mode
+at all and relied on headless `--print` auto-denying mutations — which worked,
+but only as a side effect: Claude still *attempted* edits and had them denied,
+so you paid for tool calls that could never land. In `plan` mode Claude plans
+instead of editing, and nothing is attempted in the first place.
 
 Set it with the **first-run wizard** (auto-runs the first time you launch `claudio`), or anytime via `/setup` in the REPL or `claudio setup`:
 
@@ -787,14 +902,31 @@ Claudio looks for config at `~/.config/claudio/config.json`:
   "claude_binary": "claude",
   "default_model": "sonnet",
   "max_input_tokens": 32000,
-  "compression_threshold": 4000,
   "output_format": "text",
   "verbose": false,
-  "permission_posture": "edits"
+  "permission_posture": "edits",
+
+  "effort": null,
+  "max_budget_usd": null,
+  "daily_budget_usd": null,
+  "spec_check": true,
+  "strict_spec": false,
+  "partial_messages": true
 }
 ```
 
 All fields are optional. Defaults are used for anything not specified. `permission_posture` is one of `autonomous`, `edits`, `confirm`, or `preview` (see [Permissions](#permissions)) — normally set by the wizard rather than by hand.
+
+| Key                 | Meaning                                                                         |
+| ------------------- | ------------------------------------------------------------------------------- |
+| `effort`          | Thinking depth: `low` / `medium` / `high` / `xhigh` / `max`; `null` = CLI default |
+| `max_budget_usd`  | Hard ceiling for a single call; `null` = uncapped                             |
+| `daily_budget_usd` | Cumulative ceiling per day; `null` = uncapped (see [Budgets](#budgets))       |
+| `spec_check`      | Run the pre-flight specification check                                          |
+| `strict_spec`     | Treat specification findings as a refusal rather than a warning                 |
+| `partial_messages` | Request token-by-token streaming deltas                                        |
+
+Every one of these also has an env override (`CLAUDIO_EFFORT`, `CLAUDIO_DAILY_BUDGET_USD`, `CLAUDIO_NO_PARTIAL`, …) so a one-off run never needs a config edit.
 
 ---
 
@@ -823,8 +955,11 @@ claudio/
   cache.py               Response cache (SHA-256 keyed, TTL-based)
   usage.py               Cost and usage tracking
   config.py              Configuration management
+  budget.py              Cumulative spend enforcement (daily cap + per-call clamp)
+  spec_check.py          Pre-flight specification check (local, free, non-rewriting)
   executor.py            Claude CLI integration (streaming + retry + spinner)
   session_files.py       Per-session file-hash tracking for unchanged markers
+  build_snapshot.py      Pre-build file snapshots for /undo rollback
   commands/
     build.py             claudio build (-refactor, -generate)
     ask.py               claudio ask (-review, -question, -debug)
@@ -838,9 +973,8 @@ claudio/
     powershell.py        PowerShell completion generator
   pipeline/
     filter.py            Intent-aware noise filtering
-    compress.py          Structural compression with symbol-aware preservation
     prompt.py            XML-tagged prompt construction
-    process.py           Pipeline orchestrator
+    process.py           Pipeline orchestrator (faithful — no compression)
   utils/
     args.py              @file parser with strict order enforcement
     project_context.py   Project preamble discovery (CLAUDE.md + .claudio/project.md)

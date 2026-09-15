@@ -51,3 +51,25 @@ include = ["claudio*"]
 
 [tool.setuptools.package-data]
 claudio = ["py.typed"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+# Pinned explicitly so a ruff upgrade can't silently change what CI enforces.
+# pycodestyle errors, pyflakes, import sorting, pyupgrade, bugbear, simplify.
+select = ["E4", "E7", "E9", "F", "I", "UP", "B", "SIM"]
+ignore = [
+    # claudio deliberately swallows terminal/encoding failures around every
+    # write to stdout/stderr — a broken pipe or an undecodable glyph must
+    # never take down a run that already produced the user's answer.
+    "SIM105",  # contextlib.suppress over try/except/pass
+    # `X or ""` guards on untrusted JSON read better than the ternary ruff
+    # wants, and the codebase uses that shape consistently.
+    "SIM108",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests deliberately construct odd shapes and re-import inside functions.
+"tests/*" = ["B011", "SIM117"]

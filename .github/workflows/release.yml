@@ -6,10 +6,13 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
+  # Build once. Both the GitHub Release and PyPI publish consume this exact
+  # artifact, so the wheel users install is byte-identical to the one attached
+  # to the release — two independent builds could drift.
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,33 +24,73 @@ jobs:
       - name: Install build tools
         run: pip install build
 
+      - name: Verify tag matches package version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          VERSION=$(python -c "import claudio; print(claudio.__version__)")
+          if [ "$TAG" != "$VERSION" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match __version__ $VERSION"
+            exit 1
+          fi
+
       - name: Build package
         run: python -m build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  release:
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      contents: write
+    steps:
+      # Required: action-gh-release derives the release body from the tagged
+      # commit's message, which it can only read from a checked-out repo.
+      # Without this the release publishes with nothing but a changelog link.
+      # fetch-depth: 0 so the tag and its message are actually present.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      # Set the release body EXPLICITLY from the tagged commit's message.
+      # Relying on the action's implicit behaviour is fragile: it only seeds
+      # a body when it *creates* the release, so any re-run against an
+      # existing release silently leaves a wrong body in place (and appends
+      # duplicate generated notes). Writing it out makes every run produce
+      # the same result whether the release exists or not.
+      - name: Build release notes from the tagged commit
+        run: git log -1 --format=%B "${GITHUB_REF_NAME}" > RELEASE_BODY.md
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          body_path: RELEASE_BODY.md
           generate_release_notes: true
           files: dist/*
 
   publish:
     runs-on: ubuntu-latest
-    needs: release
+    needs: build
     environment: pypi
     permissions:
       id-token: write
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
+      - uses: actions/download-artifact@v4
         with:
-          python-version: "3.12"
+          name: dist
+          path: dist/
 
-      - name: Install build tools
-        run: pip install build
-
-      - name: Build package
-        run: python -m build
-
+      # skip-existing so re-running a release (e.g. after re-pushing a tag to
+      # correct release notes) does not fail on PyPI's immutable versions.
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true

@@ -1,7 +1,8 @@
 """Noise filtering -- remove low-signal content from inputs.
 
-Every byte removed here is a token saved. This stage runs before compression
-and targets content that is never useful to Claude regardless of intent:
+Every byte removed here is a token saved. This is the only content-reducing
+stage (claudio sends file bodies faithfully otherwise) and it targets content
+that is never useful to Claude regardless of intent:
   - Trailing whitespace (free savings, ~2-5% on most files)
   - License/copyright headers (legal boilerplate, not code)
   - Consecutive blank lines (visual spacing, no semantic value)
@@ -39,7 +40,7 @@ def filter_logs(text: str) -> str:
     lines = text.splitlines()
 
     # Remove blank lines
-    lines = [l for l in lines if l.strip()]
+    lines = [line for line in lines if line.strip()]
 
     # Deduplicate consecutive identical messages (keep first + count)
     deduped = []
@@ -59,7 +60,7 @@ def filter_logs(text: str) -> str:
         deduped.append(f"  [x{count + 1}]")
 
     # Remove low-signal log lines
-    filtered = [l for l in deduped if not _is_low_signal_log(l)]
+    filtered = [line for line in deduped if not _is_low_signal_log(line)]
 
     return "\n".join(filtered)
 
@@ -81,7 +82,7 @@ def filter_code(text: str, intent: str = "") -> str:
     """
     # Phase 1: Universal cleanup
     lines = text.splitlines()
-    lines = [l.rstrip() for l in lines]  # Strip trailing whitespace
+    lines = [line.rstrip() for line in lines]  # Strip trailing whitespace
 
     # Remove shebang
     if lines and lines[0].startswith("#!"):
@@ -272,4 +273,4 @@ def _is_low_signal_log(line: str) -> bool:
 
 def _strip_trailing_whitespace(text: str) -> str:
     """Strip trailing whitespace from every line."""
-    return "\n".join(l.rstrip() for l in text.splitlines())
+    return "\n".join(line.rstrip() for line in text.splitlines())

@@ -6,8 +6,9 @@ Design principles:
   2. No duplication -- the user's description appears exactly once in <task>.
   3. Intent drives structure -- each mode gets only the instructions it
      needs. No generic "be concise" padding.
-  4. Context is pre-compressed -- the prompt builder trusts the pipeline
-     already stripped noise. No re-explaining what was removed.
+  4. Context is faithful -- file bodies are sent in full (noise-filtered,
+     never summarized). The prompt builder trusts the pipeline already
+     stripped trailing whitespace / boilerplate; nothing is re-explained.
   5. Cache-aligned order -- the stable prefix (`<project>` then `<rules>`
      / `<format>` / `<intent>` / `<context-protocol>` / `<context>`) sits
      first; the volatile tail (`<changes>` then `<task>`) sits last. The
@@ -96,14 +97,15 @@ def build_prompt(
     if readonly_escalation:
         parts.append(_READONLY_PROTOCOL)
 
-    # Two-way context protocol -- lets Claude request more context instead
-    # of hallucinating when compression was too aggressive.
+    # Two-way context protocol -- lets Claude request more context instead of
+    # guessing when the attached range is too narrow (e.g. a helper defined
+    # just outside the lines the user pinned with @file -START-END).
     if allow_context_request:
         parts.append(_CONTEXT_PROTOCOL)
 
-    # Context -- file contents, pre-compressed. Tighten whitespace one more
-    # time before tagging: the compressor preserves source formatting, but
-    # blank-line runs and trailing spaces are pure token waste here.
+    # Context -- file contents, sent faithfully. Tighten whitespace one more
+    # time before tagging: source formatting is preserved, but blank-line runs
+    # and trailing spaces are pure token waste here.
     if context:
         tight = _tighten(context)
         if tight:
@@ -138,7 +140,7 @@ _INTENT_HINTS = {
 # Instruction that opens a two-way channel for context. Two signals are
 # supported -- both parsed by run_prompt.py and honored once per call.
 #
-#   <need-context/>      missing CODE (claudio compressed too aggressively)
+#   <need-context/>      missing CODE (attached line range too narrow)
 #   <need-clarification/> ambiguous TASK (the request itself is unclear)
 #
 # Use exactly one type per response. For context, multiple ranges in one

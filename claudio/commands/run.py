@@ -23,15 +23,15 @@ import json
 import sys
 from pathlib import Path
 
-from claudio.pipeline.process import process
 from claudio.commands.run_prompt import execute_with_tracking, mark_session_files
-from claudio.utils.tokens import estimate_tokens, format_token_info
+from claudio.pipeline.process import process
 from claudio.utils.args import (
+    format_file_context,
     parse_command_args,
     resolve_file_attachments,
-    format_file_context,
 )
 from claudio.utils.output import Output
+from claudio.utils.tokens import estimate_tokens, format_token_info
 
 TASK_FILE = "claudio-task.json"
 
@@ -54,7 +54,7 @@ def execute(raw_args: list[str], ctx: dict) -> int:
     for err in parsed.errors:
         out.warn(err)
     if parsed.suggestion:
-        out.info(f"[claudio] try:  run {parsed.suggestion}")
+        out.info(f"try:  run {parsed.suggestion}")
 
     # Prompt text is ignored for run — warn if provided
     if parsed.prompt.strip():
@@ -161,7 +161,7 @@ def _run_serial(tasks: list[dict], extra_context: str, ctx: dict, out: Output) -
         )
 
         if ctx["verbose"]:
-            out.info(format_token_info(result.compressed_tokens))
+            out.info(format_token_info(result.sent_tokens))
 
         if ctx["dry_run"]:
             results.append({"task": task_name, "prompt": result.prompt})
@@ -219,7 +219,7 @@ def _run_agentic(plan: dict, tasks: list[dict], extra_context: str, ctx: dict, o
     if ctx["verbose"]:
         tokens = estimate_tokens(prompt)
         out.info(format_token_info(tokens))
-        out.info(f"[claudio] agentic tools: {', '.join(AGENTIC_ALLOWED_TOOLS)}")
+        out.info(f"agentic tools: {', '.join(AGENTIC_ALLOWED_TOOLS)}")
 
     # Pick the heaviest intent in the plan for model routing — if any task
     # is a review/refactor, the whole session deserves the stronger model.

@@ -23,7 +23,6 @@ from pathlib import Path
 from claudio import __version__
 from claudio.utils.colors import CYAN, DIM, YELLOW, colored
 
-
 PYPI_URL = "https://pypi.org/pypi/claudio-cli/json"
 CHECK_INTERVAL_SECONDS = 24 * 60 * 60  # 24h
 FETCH_TIMEOUT_SECONDS = 3.0
@@ -38,9 +37,9 @@ def _cache_path() -> Path:
 def _disabled() -> bool:
     if os.environ.get("CLAUDIO_NO_UPDATE_CHECK"):
         return True
-    if os.environ.get("CI"):
-        return True
-    return False
+    # CI runs are non-interactive; a "new version available" nag there is
+    # noise in build logs nobody acts on.
+    return bool(os.environ.get("CI"))
 
 
 def parse_version(v: str) -> tuple[int, ...]:

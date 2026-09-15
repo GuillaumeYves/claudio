@@ -12,15 +12,22 @@ from pathlib import Path
 #   edits      -> acceptEdits        : auto-apply edits, but no shell commands
 #   confirm    -> acceptEdits + gate : claudio asks Y/n once before a build
 #                                       applies, then auto-applies the edits
-#   preview    -> None (default mode): never apply; build just prints the diff
+#   preview    -> plan               : never apply; Claude reports what it
+#                                       would do instead of doing it
 #
 # "confirm" is a coarse, per-invocation gate (claudio's own prompt), not a
 # per-tool popup — the latter needs the deferred stream-input control protocol.
+#
+# `preview` used to map to None, leaning on the fact that headless `claude
+# --print` auto-denies mutating tools when nobody can approve them. That
+# worked, but only as a side effect: Claude would still *attempt* edits and
+# have them silently denied, so you paid for tool calls that could never
+# land. `plan` is the mode built for this — Claude plans rather than edits.
 PERMISSION_POSTURES = {
     "autonomous": "bypassPermissions",
     "edits": "acceptEdits",
     "confirm": "acceptEdits",
-    "preview": None,
+    "preview": "plan",
 }
 DEFAULT_POSTURE = "edits"
 
@@ -28,12 +35,34 @@ DEFAULT_CONFIG = {
     "claude_binary": "claude",
     "default_model": "sonnet",
     "max_input_tokens": 32000,
-    "compression_threshold": 4000,
     # Cap on Claude's agentic tool-use loop per call (see executor._max_turns).
     # Stops an ambiguous prompt from searching the repo until the timeout.
     "max_turns": 12,
     "output_format": "text",
     "verbose": False,
+    # Effort level passed to `claude --effort` (low|medium|high|xhigh|max).
+    # None means "don't pass the flag" and lets the CLI use its own default.
+    # A cost/quality lever within one model — often a better trade than
+    # dropping to a weaker tier.
+    "effort": None,
+    # Hard ceiling in USD for a single call (`claude --max-budget-usd`). None
+    # disables the cap. Bounds spend directly instead of via max_turns, which
+    # only caps turns as a proxy.
+    "max_budget_usd": None,
+    # Ask the CLI for token-by-token deltas rather than one snapshot per
+    # content block. Purely cosmetic; set false if your terminal struggles.
+    "partial_messages": True,
+    # Cumulative ceiling across ALL calls in a day, in USD. None disables.
+    # Unlike max_budget_usd (one call), this is what people actually worry
+    # about; the remainder is passed to each call so the CLI stops mid-run
+    # rather than overshooting. Only honest because the ledger now records
+    # billed figures — see budget.py.
+    "daily_budget_usd": None,
+    # Pre-flight specification check: name what a request leaves unpinned,
+    # locally and for free, before paying for an answer built on a guess.
+    # Advisory by default; `strict_spec` turns findings into a refusal.
+    "spec_check": True,
+    "strict_spec": False,
     # See PERMISSION_POSTURES above. Set by the setup wizard; governs what
     # `build` is allowed to do on disk.
     "permission_posture": DEFAULT_POSTURE,
@@ -94,6 +123,7 @@ _LEGACY_MODE_TO_POSTURE = {
     "bypassPermissions": "autonomous",
     "acceptEdits": "edits",
     "default": "preview",
+    "plan": "preview",
     "": "preview",
 }
 

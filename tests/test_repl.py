@@ -6,16 +6,13 @@ import io
 import sys
 from pathlib import Path
 
-import pytest
-
 from claudio.repl import (
-    _tokenize,
-    _handle_slash,
-    _print_banner,
-    _history_file,
     _format_cwd,
+    _handle_slash,
+    _history_file,
+    _print_banner,
+    _tokenize,
 )
-
 
 # ---- _tokenize ----------------------------------------------------------
 
@@ -262,6 +259,29 @@ def test_slash_model_reset_returns_none_tuple():
     assert _handle_slash("/model reset", "opus") == ("model", None)
 
 
+def test_slash_undo_without_snapshot(capsys, tmp_path, monkeypatch):
+    # /undo is wired (not "unknown command") and reports nothing to undo.
+    monkeypatch.chdir(tmp_path)
+    assert _handle_slash("/undo", None) is None
+    out = capsys.readouterr().out
+    assert "nothing to undo" in out
+    assert "unknown command" not in out
+
+
+def test_slash_undo_restores_last_build(capsys, tmp_path, monkeypatch):
+    from claudio import build_snapshot
+
+    monkeypatch.chdir(tmp_path)
+    f = tmp_path / "code.py"
+    f.write_text("original\n", encoding="utf-8")
+    build_snapshot.snapshot(["code.py"])
+    f.write_text("bad build\n", encoding="utf-8")
+
+    assert _handle_slash("/undo", None) is None
+    assert f.read_text(encoding="utf-8") == "original\n"
+    assert "reverted code.py" in capsys.readouterr().out
+
+
 def test_slash_cwd_no_arg_prints_current(capsys):
     _handle_slash("/cwd", None)
     out = capsys.readouterr().out
@@ -375,7 +395,7 @@ def test_banner_does_not_crash_on_cp1252(monkeypatch):
     written = fake.buffer.getvalue()
     assert b"Claudio" in written
     # The non-cp1252 glyph must NOT appear; the ASCII fallback is `*`.
-    assert "✻".encode("utf-8") not in written
+    assert "✻".encode() not in written
     assert b"*" in written
 
 

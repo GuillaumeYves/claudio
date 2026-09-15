@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 from claudio.utils.args import (
+    FileAttachment,
     _normalize_file_flags,
     _suggest_order,
     parse_command_args,
     resolve_file_attachments,
-    FileAttachment,
 )
-
 
 BUILD_MODES = {"r": "refactor", "refactor": "refactor",
                "g": "generate", "generate": "generate"}

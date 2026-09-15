@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from claudio.commands.build import _with_terseness as build_terseness
 from claudio.commands.ask import _with_terseness as ask_terseness
+from claudio.commands.build import _with_terseness as build_terseness
 
 
 def test_build_terseness_appends_no_preamble_and_stop():

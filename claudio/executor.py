@@ -17,10 +17,19 @@ Two output paths:
     is disabled via config/env, or as a fallback if the user's claude CLI
     doesn't emit stream-json events.
 
+Billed usage: both paths surface a `CallUsage` when the CLI reports one. The
+`result` event (stream-json) and the `--output-format json` envelope carry
+`usage` + `total_cost_usd` — what Anthropic *actually charged*, including the
+system prompt, CLAUDE.md, tool definitions and prompt-cache traffic that a
+local token estimate cannot see. claudio prefers these over its own estimate
+wherever it reports tokens or dollars.
+
 Retry policy: the buffered path retries transient failures (5xx, ECONNRESET,
 timeouts) with exponential backoff. The streaming path only retries when no
 text has been emitted yet — once a delta hits the terminal we can't unprint
-it, so a retry would duplicate output.
+it, so a retry would duplicate output. Separately, if the installed CLI
+rejects one of claudio's *optional* flags, that flag is dropped and the call
+is retried once — an older `claude` degrades instead of hard-failing.
 """
 
 from __future__ import annotations
@@ -33,13 +42,145 @@ import subprocess
 import sys
 import threading
 import time
+from typing import NamedTuple
 
 from claudio.config import load_config
 from claudio.utils.colors import (
-    BOLD, CLAUDIO_BLUE, DIM, GREEN, RED, RESET, colors_enabled,
+    BOLD,
+    CLAUDIO_BLUE,
+    DIM,
+    GREEN,
+    RED,
+    RESET,
+    colors_enabled,
 )
 from claudio.utils.markdown import MarkdownStream
 from claudio.utils.spinner import Spinner
+
+
+class CallUsage(NamedTuple):
+    """What one `claude` invocation actually cost, as reported by the CLI.
+
+    claudio's own `estimate_tokens` only ever sees the prompt claudio itself
+    composed. The real request also carries Claude Code's system prompt, the
+    project's CLAUDE.md, every tool definition, and prompt-cache reads/writes
+    — routinely tens of thousands of tokens. Estimating around that is how a
+    trivial call gets reported as "~9 tokens, $0.000003" when it billed
+    23,870 tokens and $0.0172. When the CLI hands us these numbers we use
+    them and stop guessing.
+
+    `cost_usd` is the CLI's own `total_cost_usd` (list-price basis).
+    """
+
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int
+    cache_creation_tokens: int
+    cost_usd: float
+    model: str | None
+
+    @property
+    def billed_input_tokens(self) -> int:
+        """All input tokens charged for, cache reads and writes included."""
+        return (self.input_tokens
+                + self.cache_read_tokens
+                + self.cache_creation_tokens)
+
+
+class ExecResult(NamedTuple):
+    """Return value of `execute_prompt`.
+
+    `streamed` tells the caller whether the text is already on the user's
+    screen (streaming path) or still needs printing (buffered path).
+    `usage` is None when the CLI reported none — e.g. plain-text buffered
+    output — and callers fall back to estimates.
+    """
+
+    text: str
+    streamed: bool
+    usage: CallUsage | None
+
+
+def _coerce_int(value) -> int:
+    """Non-negative int from untrusted JSON, else 0."""
+    return value if isinstance(value, int) and value >= 0 else 0
+
+
+def _parse_result_usage(obj: dict) -> CallUsage | None:
+    """Extract billed usage from a `result` event / `--output-format json` body.
+
+    Returns None when the object carries no usage block at all (so a bare
+    `{"type": "result", "result": "..."}` stays noise).
+
+    The top-level `usage` block can come back zeroed in some terminal states
+    (a budget-exhausted run, for one) while `modelUsage` still holds the real
+    per-model figures — so we fall back to `modelUsage` rather than silently
+    logging a free call.
+    """
+    usage = obj.get("usage")
+    model_usage = obj.get("modelUsage")
+    if not isinstance(usage, dict) and not isinstance(model_usage, dict):
+        return None
+    usage = usage if isinstance(usage, dict) else {}
+
+    model: str | None = None
+    entry: dict = {}
+    if isinstance(model_usage, dict) and model_usage:
+        # One entry per model that served the call (a --fallback-model hop
+        # yields two). Attribute to whichever did the most generating, and
+        # prefer its canonical id over the alias claudio asked for.
+        name, raw = max(
+            model_usage.items(),
+            key=lambda kv: _coerce_int((kv[1] or {}).get("outputTokens")
+                                       if isinstance(kv[1], dict) else 0),
+        )
+        entry = raw if isinstance(raw, dict) else {}
+        model = entry.get("canonicalModel") or name
+
+    tokens = {
+        "input": _coerce_int(usage.get("input_tokens")),
+        "output": _coerce_int(usage.get("output_tokens")),
+        "cache_read": _coerce_int(usage.get("cache_read_input_tokens")),
+        "cache_creation": _coerce_int(usage.get("cache_creation_input_tokens")),
+    }
+    if not any(tokens.values()) and entry:
+        tokens = {
+            "input": _coerce_int(entry.get("inputTokens")),
+            "output": _coerce_int(entry.get("outputTokens")),
+            "cache_read": _coerce_int(entry.get("cacheReadInputTokens")),
+            "cache_creation": _coerce_int(entry.get("cacheCreationInputTokens")),
+        }
+
+    cost = obj.get("total_cost_usd")
+    if not isinstance(cost, (int, float)):
+        cost = entry.get("costUSD")
+    cost = float(cost) if isinstance(cost, (int, float)) else 0.0
+
+    return CallUsage(
+        input_tokens=tokens["input"],
+        output_tokens=tokens["output"],
+        cache_read_tokens=tokens["cache_read"],
+        cache_creation_tokens=tokens["cache_creation"],
+        cost_usd=cost,
+        model=model,
+    )
+
+
+def _usage_from_json_text(text: str) -> CallUsage | None:
+    """Best-effort usage from an `--output-format json` response body.
+
+    Returns None for plain-text output or anything unparseable — reporting
+    no usage is correct there, and callers estimate instead.
+    """
+    if not text:
+        return None
+    try:
+        obj = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(obj, dict):
+        return None
+    return _parse_result_usage(obj)
 
 
 def _print_error(message: str) -> None:
@@ -88,6 +229,27 @@ _DEFAULT_BACKOFF_BASE = 2.0  # 2s, 4s, 8s
 # timeout — the "searching… thinking…" runaway. 12 turns is enough to gather
 # context for a focused claudio task without wandering. 0 disables the cap.
 _DEFAULT_MAX_TURNS = 12
+
+# Effort levels `claude --effort` accepts. Effort is a cost/quality lever that
+# is orthogonal to model tier: dropping effort on the same model is often a
+# better trade than dropping to a weaker model.
+_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+
+# Optional flags claudio adds for quality-of-life. An older `claude` that
+# doesn't know one of these would hard-fail the whole call, so on an
+# "unknown option" error we drop the offending flag and retry once.
+_OPTIONAL_FLAGS = frozenset({
+    "--include-partial-messages",
+    "--exclude-dynamic-system-prompt-sections",
+    "--effort",
+    "--max-budget-usd",
+    "--fallback-model",
+})
+# Of those, the ones whose *next* argv is a value that must be dropped too.
+_VALUE_TAKING_FLAGS = frozenset({"--effort", "--max-budget-usd", "--fallback-model"})
+_UNKNOWN_OPTION_RE = re.compile(
+    r"unknown (?:option|argument|flag)s?[:\s'\"]*(--[a-z0-9][a-z0-9-]*)", re.IGNORECASE
+)
 
 
 def find_claude_cli() -> str | None:
@@ -163,6 +325,80 @@ def _cache_friendly_enabled() -> bool:
     return bool(cfg.get("cache_friendly", True))
 
 
+def _partial_messages_enabled() -> bool:
+    """Ask the CLI for true token-by-token deltas. On by default.
+
+    Without `--include-partial-messages`, `stream-json` emits one complete
+    message snapshot per content block — so "streaming" arrives in chunks,
+    not tokens. With it, the CLI also emits `stream_event` wrappers carrying
+    Anthropic `content_block_delta` events, which is what actually streams.
+
+    Disable with CLAUDIO_NO_PARTIAL=1 or `partial_messages: false` in config.
+    """
+    if os.environ.get("CLAUDIO_NO_PARTIAL"):
+        return False
+    cfg = load_config()
+    return bool(cfg.get("partial_messages", True))
+
+
+def _resolve_effort(override: str | None = None) -> str | None:
+    """Resolve --effort from override > env > config. None means don't pass it.
+
+    An unrecognised level is dropped with a warning rather than forwarded —
+    the CLI would reject it and fail the whole call.
+    """
+    value = override or os.environ.get("CLAUDIO_EFFORT") or load_config().get("effort")
+    if not value:
+        return None
+    value = str(value).strip().lower()
+    if value not in _EFFORT_LEVELS:
+        print(f"[claudio:warn] ignoring unknown effort level {value!r} "
+              f"(expected one of: {', '.join(_EFFORT_LEVELS)})", file=sys.stderr)
+        return None
+    return value
+
+
+def _resolve_max_budget(override: float | None = None) -> float | None:
+    """Resolve --max-budget-usd from override > env > config.
+
+    A hard dollar ceiling on the call: the CLI stops and reports
+    `terminal_reason: budget_exhausted` rather than running past it. None
+    means no cap. Non-positive or unparseable values are ignored.
+    """
+    raw = override
+    if raw is None:
+        raw = os.environ.get("CLAUDIO_MAX_BUDGET_USD") or load_config().get("max_budget_usd")
+    if raw is None or raw == "":
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        print(f"[claudio:warn] ignoring unparseable max_budget_usd {raw!r}", file=sys.stderr)
+        return None
+    return value if value > 0 else None
+
+
+def _strip_unsupported_flag(cmd: list[str], stderr: str) -> list[str] | None:
+    """Drop an optional flag the installed CLI rejected, for a degraded retry.
+
+    Returns the shortened command, or None when the error isn't an unknown
+    *optional* flag (so genuine failures still surface). Each call removes at
+    most one flag, and a removed flag can't match again — the retry loop is
+    bounded by the number of optional flags.
+    """
+    if not stderr:
+        return None
+    match = _UNKNOWN_OPTION_RE.search(stderr)
+    if not match:
+        return None
+    flag = match.group(1)
+    if flag not in _OPTIONAL_FLAGS or flag not in cmd:
+        return None
+    i = cmd.index(flag)
+    end = i + (2 if flag in _VALUE_TAKING_FLAGS else 1)
+    return cmd[:i] + cmd[end:]
+
+
 def _is_transient(stderr: str, returncode: int) -> bool:
     """Decide whether a non-zero exit looks worth retrying."""
     if returncode in (124, 137, 143):
@@ -180,7 +416,9 @@ def execute_prompt(
     resume: str | None = None,
     allowed_tools: list[str] | None = None,
     permission_mode: str | None = None,
-) -> tuple[str, bool]:
+    effort: str | None = None,
+    max_budget_usd: float | None = None,
+) -> ExecResult:
     """Send a prompt to Claude CLI.
 
     Args:
@@ -190,11 +428,14 @@ def execute_prompt(
             files must pass e.g. `acceptEdits` — otherwise Claude emits the
             Edit/Write tool_use events but the writes are auto-denied and
             nothing reaches disk.
+        effort: Maps to `--effort` (low|medium|high|xhigh|max). Falls back to
+            CLAUDIO_EFFORT / config when omitted.
+        max_budget_usd: Maps to `--max-budget-usd`, a hard spend ceiling for
+            this call. Falls back to CLAUDIO_MAX_BUDGET_USD / config.
 
     Returns:
-        (response_text, was_streamed) — `was_streamed` tells the caller
-        whether the response has already been written to stdout (streaming
-        path) or still needs to be printed (buffered path).
+        ExecResult(text, streamed, usage). `usage` carries the CLI's billed
+        figures when it reported them, and is None otherwise.
     """
     claude_bin = find_claude_cli()
     if not claude_bin:
@@ -216,8 +457,12 @@ def execute_prompt(
         cmd.extend(["--output-format", "json"])
     elif use_stream:
         # `--verbose` is the documented partner of `stream-json` — it tells
-        # the CLI to emit per-delta events instead of one big result event.
+        # the CLI to emit per-event output instead of one big result event.
         cmd.extend(["--output-format", "stream-json", "--verbose"])
+        # ...and `--include-partial-messages` is what makes it stream *tokens*.
+        # Without it each content block arrives as one finished snapshot.
+        if _partial_messages_enabled():
+            cmd.append("--include-partial-messages")
     if model:
         cmd.extend(["--model", model])
     # Bound the agentic loop so an ambiguous prompt can't spin on tool calls
@@ -239,6 +484,17 @@ def execute_prompt(
         cmd.extend(["--allowedTools", ",".join(allowed_tools)])
     if permission_mode:
         cmd.extend(["--permission-mode", permission_mode])
+    # Effort tunes thinking depth / token spend within the chosen model — a
+    # finer-grained cost lever than swapping tiers.
+    resolved_effort = _resolve_effort(effort)
+    if resolved_effort:
+        cmd.extend(["--effort", resolved_effort])
+    # Hard dollar ceiling. The CLI stops the run itself rather than letting an
+    # ambiguous prompt spend without bound — a truer guard than --max-turns,
+    # which caps turns as a proxy for spend.
+    budget = _resolve_max_budget(max_budget_usd)
+    if budget is not None:
+        cmd.extend(["--max-budget-usd", str(budget)])
 
     spinner_label = f"asking {model}" if model else "asking claude"
 
@@ -256,11 +512,19 @@ def _execute_buffered(
     claude_bin: str,
     max_retries: int,
     backoff_base: float,
-) -> tuple[str, bool]:
-    """Original retry-with-backoff path. Returns (text, was_streamed=False)."""
+) -> ExecResult:
+    """Original retry-with-backoff path. Returns ExecResult(streamed=False).
+
+    Usage is available only when `--output-format json` was requested; a
+    plain-text buffered run carries no usage envelope, so `usage` is None and
+    callers fall back to estimating.
+    """
     last_error: str | None = None
+    cmd = list(cmd)
+    degraded_retries = len(_OPTIONAL_FLAGS)
     with Spinner(spinner_label) as spin:
-        for attempt in range(max_retries + 1):
+        attempt = 0
+        while attempt <= max_retries:
             try:
                 result = subprocess.run(
                     cmd,
@@ -277,6 +541,7 @@ def _execute_buffered(
                     delay = backoff_base * (2 ** attempt)
                     spin.update(f"{spinner_label} (timed out — retry {attempt + 1}/{max_retries} in {delay:.0f}s)")
                     time.sleep(delay)
+                    attempt += 1
                     continue
                 _print_error(f"Claude CLI {last_error} after {max_retries + 1} attempts.")
                 sys.exit(1)
@@ -285,10 +550,23 @@ def _execute_buffered(
                 sys.exit(1)
 
             if result.returncode == 0:
-                return result.stdout.strip(), False
+                text = result.stdout.strip()
+                return ExecResult(text, False, _usage_from_json_text(text))
 
             stderr = (result.stderr or "").strip()
             last_error = stderr or f"exit {result.returncode}"
+
+            # An older CLI that doesn't know one of our optional flags: drop
+            # it and try again rather than failing the user's call outright.
+            if degraded_retries > 0:
+                reduced = _strip_unsupported_flag(cmd, stderr)
+                if reduced is not None:
+                    degraded_retries -= 1
+                    dropped = [f for f in cmd if f not in reduced]
+                    cmd = reduced
+                    print(f"[claudio:warn] your claude CLI does not support "
+                          f"{dropped[0]}; retrying without it", file=sys.stderr)
+                    continue
 
             if attempt < max_retries and _is_transient(stderr, result.returncode):
                 delay = backoff_base * (2 ** attempt)
@@ -303,6 +581,7 @@ def _execute_buffered(
                     file=sys.stderr,
                 )
                 time.sleep(delay)
+                attempt += 1
                 continue
 
             if stderr:
@@ -321,7 +600,7 @@ def _execute_streaming(
     timeout: int,
     spinner_label: str,
     claude_bin: str,
-) -> tuple[str, bool]:
+) -> ExecResult:
     """Stream JSONL events from claude --output-format stream-json.
 
     Writes text deltas live to stdout, returns the full aggregated text so
@@ -333,11 +612,14 @@ def _execute_streaming(
     """
     max_retries, backoff_base = _retry_settings()
     last_error: str | None = None
+    cmd = list(cmd)
+    degraded_retries = len(_OPTIONAL_FLAGS)
 
     with Spinner(spinner_label) as spin:
-        for attempt in range(max_retries + 1):
+        attempt = 0
+        while attempt <= max_retries:
             try:
-                rc, full_text, stderr, saw_delta = _stream_once(
+                rc, full_text, stderr, saw_delta, usage = _stream_once(
                     cmd, prompt, timeout, spin, spinner_label
                 )
             except FileNotFoundError:
@@ -349,14 +631,27 @@ def _execute_streaming(
                     delay = backoff_base * (2 ** attempt)
                     spin.update(f"{spinner_label} (timed out — retry {attempt + 1}/{max_retries} in {delay:.0f}s)")
                     time.sleep(delay)
+                    attempt += 1
                     continue
                 _print_error(f"Claude CLI {last_error} after {max_retries + 1} attempts.")
                 sys.exit(1)
 
             if rc == 0:
-                return full_text.strip(), True
+                return ExecResult(full_text.strip(), True, usage)
 
             last_error = (stderr or "").strip() or f"exit {rc}"
+
+            # Unknown optional flag on an older CLI: drop it and retry. Safe
+            # even here, because a rejected flag fails before any text exists.
+            if not saw_delta and degraded_retries > 0:
+                reduced = _strip_unsupported_flag(cmd, stderr)
+                if reduced is not None:
+                    degraded_retries -= 1
+                    dropped = [f for f in cmd if f not in reduced]
+                    cmd = reduced
+                    print(f"[claudio:warn] your claude CLI does not support "
+                          f"{dropped[0]}; retrying without it", file=sys.stderr)
+                    continue
 
             # Retry only when we haven't already printed anything.
             if not saw_delta and attempt < max_retries and _is_transient(stderr, rc):
@@ -372,6 +667,7 @@ def _execute_streaming(
                     file=sys.stderr,
                 )
                 time.sleep(delay)
+                attempt += 1
                 continue
 
             if stderr:
@@ -390,8 +686,10 @@ def _stream_once(
     timeout: int,
     spinner: Spinner,
     spinner_label: str,
-) -> tuple[int, str, str, bool]:
-    """One pass at streaming. Returns (returncode, full_text, stderr, saw_delta).
+) -> tuple[int, str, str, bool, CallUsage | None]:
+    """One pass at streaming.
+
+    Returns (returncode, full_text, stderr, saw_delta, usage).
 
     Text events stream through MarkdownStream (renders bold/headers/etc as
     ANSI in a TTY, plain otherwise). Tool events surface as:
@@ -419,6 +717,13 @@ def _stream_once(
     raw_buffer: list[str] = []
     saw_delta = False
     saw_tool = False  # any tool_use event during this turn -> emit the handoff
+    usage: CallUsage | None = None
+    # True once a real token delta arrives. With --include-partial-messages
+    # the CLI emits BOTH per-token deltas and, when each block finishes, a
+    # complete `assistant` snapshot of the same text. Rendering both would
+    # print the response twice, so once deltas are flowing the snapshots are
+    # used only for their tool_use blocks.
+    saw_partial = False
     md_stream = MarkdownStream(out_stream=sys.stdout)
     # Post-text tool tracking: the currently-animating breadcrumb (if any)
     # plus a flag set whenever a tool fires after text has started, so we
@@ -443,7 +748,18 @@ def _stream_once(
                 continue
             kind, payload = _parse_stream_event(line)
 
-            if kind == "text" and payload:
+            if kind == "usage":
+                usage = payload
+                continue
+
+            if kind in ("text", "delta"):
+                if kind == "delta":
+                    saw_partial = True
+                elif saw_partial:
+                    # Snapshot of text already rendered delta-by-delta.
+                    continue
+                if not payload:
+                    continue
                 if not saw_delta:
                     spinner.stop()
                     # Pre-text handoff: any tools that fired before the
@@ -541,7 +857,7 @@ def _stream_once(
         except OSError:
             pass
 
-    return rc, text, stderr, saw_delta
+    return rc, text, stderr, saw_delta, usage
 
 
 class _BreadcrumbAnimator:
@@ -672,24 +988,29 @@ def _emit_context_handoff() -> None:
         pass
 
 
-def _parse_stream_event(line: str) -> tuple[str, str]:
+def _parse_stream_event(line: str) -> tuple[str, object]:
     """Parse one stream-json line into (kind, payload).
 
     Returns:
-      ('text', text)   - user-visible response text to render
+      ('delta', text)  - a single streamed token run, from a partial-message
+                          `stream_event`; render it immediately
+      ('text', text)   - a complete `assistant` content-block snapshot
       ('tool', label)  - tool_use event; `label` is e.g. "reading main.py"
                           for display in the spinner or as a breadcrumb
+      ('usage', usage) - a CallUsage carrying the CLI's billed figures
       ('', '')         - event not relevant to the user (system, thinking,
-                          message_start, result, etc.)
+                          message_start, etc.)
 
-    The claude CLI's `--output-format stream-json` emits *complete message
-    snapshots* per event. Each `"assistant"` event carries `message.content[]`
-    which may contain text + tool_use + thinking blocks. We split them by
-    kind so the caller can route text to stdout (with markdown rendering)
-    and tool events to the spinner / a stderr breadcrumb.
+    Two shapes arrive together. `--output-format stream-json` emits *complete
+    message snapshots*: each `"assistant"` event carries `message.content[]`
+    with text + tool_use + thinking blocks. `--include-partial-messages`
+    additionally emits `"stream_event"` wrappers carrying raw Anthropic
+    events, which is where real per-token text deltas live.
 
-    Falls back to Anthropic API-style `content_block_delta` events for
-    forward-compat with future CLI versions.
+    Both cover the same text, so the caller renders deltas when it sees them
+    and falls back to snapshots when it doesn't (see `saw_partial` in
+    `_stream_once`). Tool labels always come from the snapshot, which is the
+    first place a tool_use block is complete enough to summarise.
     """
     try:
         obj = json.loads(line)
@@ -699,6 +1020,16 @@ def _parse_stream_event(line: str) -> tuple[str, str]:
         return ("", "")
 
     t = obj.get("type", "")
+
+    # Partial-message wrapper: the real token stream.
+    if t == "stream_event":
+        event = obj.get("event")
+        return _parse_stream_event_inner(event) if isinstance(event, dict) else ("", "")
+
+    # Terminal event: the only place the CLI reports what the call billed.
+    if t == "result":
+        usage = _parse_result_usage(obj)
+        return ("usage", usage) if usage is not None else ("", "")
 
     if t == "assistant":
         message = obj.get("message") or {}
@@ -726,13 +1057,9 @@ def _parse_stream_event(line: str) -> tuple[str, str]:
             return ("tool", tool_label)
         return ("", "")
 
-    # Future-proofing: real Anthropic streaming deltas, if the CLI ever
-    # switches modes.
+    # Bare Anthropic delta (some integrations emit these unwrapped).
     if t == "content_block_delta":
-        delta = obj.get("delta") or {}
-        if isinstance(delta, dict) and delta.get("type") == "text_delta":
-            text = delta.get("text", "") or ""
-            return ("text", text) if text else ("", "")
+        return _parse_stream_event_inner(obj)
 
     # Light-weight wrapper some integrations use.
     if t == "text":
@@ -740,6 +1067,22 @@ def _parse_stream_event(line: str) -> tuple[str, str]:
         return ("text", text) if text else ("", "")
 
     return ("", "")
+
+
+def _parse_stream_event_inner(event: dict) -> tuple[str, object]:
+    """Parse a raw Anthropic streaming event into (kind, payload).
+
+    Only text deltas matter to us: `thinking_delta` and `signature_delta`
+    are internal reasoning that must not reach stdout, and `input_json_delta`
+    is a partially-built tool input we'd rather summarise once it's whole.
+    """
+    if event.get("type") != "content_block_delta":
+        return ("", "")
+    delta = event.get("delta")
+    if not isinstance(delta, dict) or delta.get("type") != "text_delta":
+        return ("", "")
+    text = delta.get("text", "") or ""
+    return ("delta", text) if text else ("", "")
 
 
 def _tool_status_label(name: str, inp: dict) -> str:

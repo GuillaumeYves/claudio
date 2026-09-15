@@ -26,10 +26,14 @@ from pathlib import Path
 
 from claudio import __version__, session_files
 from claudio.utils.colors import (
-    BOLD, CLAUDIO_BLUE, DIM, GREY, RESET, colors_enabled,
+    BOLD,
+    CLAUDIO_BLUE,
+    DIM,
+    GREY,
+    RESET,
+    colors_enabled,
 )
 from claudio.utils.update_check import pending_notice, start_background_check
-
 
 _LOGO_LINES = (
     "█▀▀ █   ▄▀█ █ █ █▀▄ █ █▀█",
@@ -72,6 +76,7 @@ Slash commands:
     /clear           Clear the screen
     /fresh           Drop the current conversation and start a new session
     /session         Show the current session id
+    /undo            Revert the files changed by the last build
     /exit | /quit    Exit (Ctrl-D also works)
 
 Sticky mode + files:
@@ -148,6 +153,7 @@ _SLASH_COMMANDS = {
     "/stats": "Token usage and cost",
     "/fresh": "Start a new conversation (drops Claude's memory of this one)",
     "/session": "Print the current session id",
+    "/undo": "Revert the files changed by the last build",
     "/exit": "Exit the REPL",
     "/quit": "Exit the REPL",
 }
@@ -224,7 +230,6 @@ def iter_command_completions(text_before_cursor: str):
     """
     text = text_before_cursor
     stripped_left = text.lstrip()
-    leading_ws = len(text) - len(stripped_left)
 
     # 1. Slash command at line start.
     if stripped_left.startswith("/") and " " not in stripped_left:
@@ -813,9 +818,34 @@ def _handle_slash(
         from claudio.commands.setup import configure_permissions
         configure_permissions(first_run=False)
         return None
+    if cmd == "/undo":
+        _do_undo()
+        return None
 
     print(f"[claudio] unknown command: {cmd}. Try /help.", file=sys.stderr)
     return None
+
+
+def _do_undo() -> None:
+    """Restore the files changed by the last build (`/undo`)."""
+    from claudio import build_snapshot
+
+    result = build_snapshot.undo()
+    if result is None:
+        print("[claudio] nothing to undo (no build snapshot found).")
+        return
+    restored, deleted, errors = result
+    for path in restored:
+        print(f"[claudio] reverted {path}")
+    for path in deleted:
+        print(f"[claudio] removed {path} (created by the build)")
+    for err in errors:
+        print(f"[claudio:error] {err}", file=sys.stderr)
+    if not restored and not deleted and not errors:
+        print("[claudio] snapshot was empty — nothing changed.")
+    elif not errors:
+        print(f"[claudio] undo complete ({len(restored)} reverted, "
+              f"{len(deleted)} removed).")
 
 
 def _parse_mode_arg(arg: str) -> tuple[str, str] | None:

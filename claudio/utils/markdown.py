@@ -27,7 +27,15 @@ import sys
 from dataclasses import dataclass
 
 from claudio.utils.colors import (
-    BOLD, CLAUDIO_BLUE, DIM, GREEN, GREEN_BG, GREY, RED, RED_BG, RESET,
+    BOLD,
+    CLAUDIO_BLUE,
+    DIM,
+    GREEN,
+    GREEN_BG,
+    GREY,
+    RED,
+    RED_BG,
+    RESET,
     colors_enabled,
 )
 
@@ -203,7 +211,7 @@ class MarkdownStream:
                 was_in_fence = self._state.in_fence
                 styled = _render_line(self._buffer, self._state)
                 # Trailing partial line, no closing newline
-                if fenced := was_in_fence:
+                if was_in_fence:
                     self._write(self._prefix + styled)
                 else:
                     rows = _wrap_with_indent(styled, _term_width(), self._prefix)

@@ -8,6 +8,11 @@ Tiers (aliases are accepted by `claude --model`):
   haiku   -- fast/cheap; small questions, trivial asks
   sonnet  -- default balanced tier
   opus    -- heavy analysis, large context, high-stakes review/refactor
+
+`fable` is deliberately NOT in the routing table. At $10/$50 per 1M tokens it
+is 2x Opus input and 5x Sonnet, so claudio never escalates to it on your
+behalf — it is opt-in only, via `--model fable` or `default_model`. Pricing
+for it still resolves correctly (see tokens._tier_for) when you do pin it.
 """
 
 # Thresholds in estimated input tokens.

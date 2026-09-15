@@ -94,7 +94,7 @@ def test_executor_retries_transient_then_succeeds(monkeypatch):
     monkeypatch.setattr(executor.subprocess, "run", fake_run)
     monkeypatch.setenv("CLAUDIO_MAX_RETRIES", "3")
 
-    text, was_streamed = executor.execute_prompt("hello")
+    text, was_streamed, _usage = executor.execute_prompt("hello")
     assert text == "ok"
     assert was_streamed is False
     assert len(calls) == 3
@@ -143,7 +143,7 @@ def test_executor_retries_on_subprocess_timeout(monkeypatch):
     monkeypatch.setattr(executor.subprocess, "run", fake_run)
     monkeypatch.setenv("CLAUDIO_MAX_RETRIES", "2")
 
-    text, was_streamed = executor.execute_prompt("hello")
+    text, was_streamed, _usage = executor.execute_prompt("hello")
     assert text == "recovered"
     assert was_streamed is False
     assert len(calls) == 2

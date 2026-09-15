@@ -64,8 +64,7 @@ def test_get_bpe_encoder_caches_failure(monkeypatch):
     assert tokens._get_bpe_encoder() is None
     # Second call: returns cached None, no retry
     assert tokens._get_bpe_encoder() is None
-    # Only one import attempt (tiktoken), even across two calls
-    tiktoken_imports = [True for _ in range(calls["n"])]
+    # Only one import attempt (tiktoken), even across two calls.
     # The exact count depends on Python's internal import behaviour, but it
     # should be at most a small constant — definitely not 2+ tiktoken imports.
     assert calls["n"] <= 4
@@ -87,8 +86,10 @@ def test_format_token_info_warns_on_large():
 def test_tier_for_maps_aliases_and_ids():
     assert tokens._tier_for("haiku") == "haiku"
     assert tokens._tier_for("opus") == "opus"
-    assert tokens._tier_for("claude-opus-4-8") == "opus"
+    assert tokens._tier_for("claude-opus-5") == "opus"
     assert tokens._tier_for("sonnet") == "sonnet"
+    assert tokens._tier_for("fable") == "fable"
+    assert tokens._tier_for("claude-fable-5-1") == "fable"
     # Unknown / None default to the router's fallthrough tier.
     assert tokens._tier_for(None) == "sonnet"
     assert tokens._tier_for("something-weird") == "sonnet"
@@ -115,15 +116,25 @@ def test_format_estimate_opus_costs_more_than_haiku():
 def test_pricing_table_matches_published_rates():
     # Single source of truth — guard the actual numbers so a stale edit is caught.
     assert tokens._PRICING_PER_M["opus"] == {"input": 5.00, "output": 25.00}
-    assert tokens._PRICING_PER_M["sonnet"] == {"input": 3.00, "output": 15.00}
+    assert tokens._PRICING_PER_M["sonnet"] == {"input": 2.00, "output": 10.00}
     assert tokens._PRICING_PER_M["haiku"] == {"input": 1.00, "output": 5.00}
+    assert tokens._PRICING_PER_M["fable"] == {"input": 10.00, "output": 50.00}
 
 
 def test_estimate_cost_prices_by_model():
-    # 1M in + 1M out: opus = $5 + $25 = $30; default (sonnet) = $3 + $15 = $18.
+    # 1M in + 1M out: opus = $5 + $25 = $30; default (sonnet) = $2 + $10 = $12.
     assert tokens.estimate_cost(1_000_000, 1_000_000, model="opus") == 30.00
-    assert tokens.estimate_cost(1_000_000, 1_000_000) == 18.00
+    assert tokens.estimate_cost(1_000_000, 1_000_000) == 12.00
     assert tokens.estimate_cost(1_000_000, 1_000_000, model="claude-haiku-4-5") == 6.00
+
+
+def test_fable_is_never_priced_as_a_cheaper_tier():
+    """Regression: `fable` used to fall through to the sonnet default, which
+    understated a $10/$50 model by 5x — the dangerous direction to be wrong."""
+    assert tokens.estimate_cost(1_000_000, 1_000_000, model="fable") == 60.00
+    fable = tokens.estimate_cost(1_000_000, 0, model="claude-fable-5-1")
+    opus = tokens.estimate_cost(1_000_000, 0, model="opus")
+    assert fable > opus
 
 
 def test_estimate_and_token_info_name_the_counting_method(monkeypatch):

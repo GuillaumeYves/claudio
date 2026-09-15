@@ -9,7 +9,6 @@ from claudio.repl import (
     extract_sticky,
 )
 
-
 # ---- apply_sticky: bare prompts inherit sticky context ----------------
 
 def test_explicit_command_passes_through_unchanged():

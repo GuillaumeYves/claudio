@@ -37,7 +37,7 @@ def test_mutating_run_bypasses_cache(monkeypatch):
 
     def fake_execute(prompt, **kwargs):
         calls.append(kwargs)
-        return ("applied the edit", True)
+        return ("applied the edit", True, None)
 
     monkeypatch.setattr(run_prompt, "execute_prompt", fake_execute)
 
@@ -61,7 +61,7 @@ def test_mutating_run_ignores_existing_cache_entry(monkeypatch):
 
     def fake_execute(prompt, **kwargs):
         calls.append(kwargs)
-        return ("freshly applied", True)
+        return ("freshly applied", True, None)
 
     monkeypatch.setattr(run_prompt, "execute_prompt", fake_execute)
 
@@ -80,7 +80,7 @@ def test_estimate_short_circuits_before_executor(monkeypatch):
 
     def fake_execute(prompt, **kwargs):
         calls.append(kwargs)
-        return ("should never run", True)
+        return ("should never run", True, None)
 
     monkeypatch.setattr(run_prompt, "execute_prompt", fake_execute)
 
@@ -101,7 +101,7 @@ def test_readonly_run_still_caches(monkeypatch):
 
     def fake_execute(prompt, **kwargs):
         calls.append(kwargs)
-        return ("the answer", True)
+        return ("the answer", True, None)
 
     monkeypatch.setattr(run_prompt, "execute_prompt", fake_execute)
 

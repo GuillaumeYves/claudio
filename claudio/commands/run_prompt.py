@@ -16,7 +16,6 @@ from claudio.utils.model_router import pick_model
 from claudio.utils.output import Output
 from claudio.utils.tokens import estimate_tokens, format_estimate
 
-
 # Signal pattern for the two-way context channel. Claude is instructed (via
 # prompt.py's <context-protocol>) to emit one or more of these when more
 # context is needed. We accept either a single <need-context …/> tag or a
@@ -77,9 +76,9 @@ def collect_clarification_answer(question: str, out: Output) -> str | None:
     caller must skip the retry and bubble the unanswered question up to
     the user, who can re-run with the clarifying info appended.
     """
-    out.info(f"[claudio] Claude needs clarification: {question}")
+    out.info(f"Claude needs clarification: {question}")
     if not sys.stdin.isatty():
-        out.info("[claudio] (non-interactive shell — re-run with the answer "
+        out.info("(non-interactive shell — re-run with the answer "
                  "appended to your prompt)")
         return None
     try:
@@ -151,7 +150,7 @@ def mark_session_files(ctx: dict, files, out: Output) -> None:
         return
     for path, lines in session_files.changed_since_seen(session_id, files):
         loc = f"{path} lines {lines}" if lines else path
-        out.warn(f"[claudio] {loc} changed since this session last saw it "
+        out.warn(f"{loc} changed since this session last saw it "
                  f"— re-sending the new version")
     unchanged = session_files.mark_files_seen(session_id, files)
     for fa in files:
@@ -184,6 +183,16 @@ def resolve_model(ctx: dict, intent: str, input_tokens: int, cmd: str = "") -> s
     return pick_model(intent, input_tokens)
 
 
+def _as_float(value) -> float | None:
+    """Coerce a CLI-supplied budget string to float, ignoring junk."""
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 # Permission modes that let Claude mutate the filesystem. Runs in these
 # modes are side-effecting, so their output must NOT be cached — a cache hit
 # would replay the stored narration ("Done!") without re-applying the edit.
@@ -200,6 +209,8 @@ def execute_with_tracking(
     metadata: dict | None = None,
     allowed_tools: list[str] | None = None,
     permission_mode: str | None = None,
+    user_prompt: str = "",
+    spec_files=None,
 ) -> str | None:
     """Execute a prompt with cache check, model routing, and usage tracking.
 
@@ -215,6 +226,9 @@ def execute_with_tracking(
         intent: Pipeline intent — drives model routing when --model not set.
         metadata: Pipeline metadata to display in verbose mode.
         allowed_tools: Optional tool allowlist (used by agentic run).
+        user_prompt: The user's own words, before prompt assembly — the
+            pre-flight spec check inspects these, never the built prompt.
+        spec_files: Resolved attachments, for the same check.
         permission_mode: Optional CLI permission mode. When it permits file
             mutation (see _MUTATING_PERMISSION_MODES), caching is bypassed so
             the edit actually runs every time instead of replaying a stored
@@ -226,13 +240,28 @@ def execute_with_tracking(
     input_tokens = estimate_tokens(prompt)
     model = resolve_model(ctx, intent, input_tokens, cmd=cmd)
 
+    # Pre-flight specification check. Free, local, and it never rewrites the
+    # prompt — it only names what the request leaves unpinned. Runs before
+    # --estimate/--dry-run too, so you see the gap whichever way you look.
+    _cfg = load_config()
+    if not ctx.get("no_spec_check") and _cfg.get("spec_check", True):
+        from claudio import spec_check
+        findings = spec_check.check(
+            user_prompt, spec_files or [], cmd, mode, input_tokens,
+        )
+        if findings:
+            strict = bool(ctx.get("strict_spec") or _cfg.get("strict_spec"))
+            out.warn(spec_check.render(findings, strict))
+            if strict:
+                return None
+
     if ctx.get("verbose") and model:
-        out.info(f"[claudio] model: {model}")
+        out.info(f"model: {model}")
 
     if ctx.get("verbose"):
         from claudio.config import permission_posture
         mode_label = permission_mode or "default"
-        out.info(f"[claudio] permission mode: {mode_label} (posture: {permission_posture()})")
+        out.info(f"permission mode: {mode_label} (posture: {permission_posture()})")
 
     # --estimate -- price the request and stop before calling Claude. Like
     # --dry-run, but reports token count + projected input cost instead of the
@@ -246,6 +275,19 @@ def execute_with_tracking(
     if ctx["dry_run"]:
         out.result(prompt, metadata=metadata)
         return None
+
+    # Cumulative spend policy. The per-call cap the user asked for is
+    # narrowed to whatever is left of today's budget, so a single call can
+    # never blow through the daily cap — the CLI stops mid-run instead.
+    from claudio import budget
+    allowed, effective_budget, budget_note = budget.check(
+        _as_float(ctx.get("max_budget_usd"))
+    )
+    if not allowed:
+        out.error(budget_note or "daily budget reached")
+        return None
+    if budget_note:
+        out.warn(budget_note)
 
     # Cache check (unless --no-cache). Skip cache when resuming a session —
     # the user explicitly wants a fresh Claude turn, not a stored echo — and
@@ -262,7 +304,7 @@ def execute_with_tracking(
             return cached
 
     # Execute
-    response, was_streamed = execute_prompt(
+    response, was_streamed, usage = execute_prompt(
         prompt,
         json_output=ctx["json_output"],
         model=model,
@@ -270,16 +312,27 @@ def execute_with_tracking(
         resume=ctx.get("resume"),
         allowed_tools=allowed_tools,
         permission_mode=permission_mode,
+        effort=ctx.get("effort"),
+        max_budget_usd=effective_budget,
     )
 
     # Cache store
     if use_cache:
         cache_put(prompt, response, input_tokens)
 
-    # Log usage
+    # Log usage. When the CLI reported what the call actually billed, that
+    # supersedes our estimate entirely — see usage.log_request. The estimate
+    # is still computed as the fallback for CLIs/paths that report nothing.
     output_tokens = estimate_tokens(response)
     log_request(cmd, mode, input_tokens, output_tokens=output_tokens,
-                cached=False, model=model)
+                cached=False, model=model, usage=usage)
+
+    if ctx.get("verbose") and usage is not None:
+        out.info(
+            f"billed: {usage.billed_input_tokens:,} in "
+            f"({usage.cache_read_tokens:,} cached) / {usage.output_tokens:,} out "
+            f"| ${usage.cost_usd:.4f} | {usage.model or model}"
+        )
 
     # When the executor streamed text live, the response is already on the
     # user's screen — don't print it again. We still want verbose metadata

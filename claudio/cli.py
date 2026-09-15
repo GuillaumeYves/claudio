@@ -47,7 +47,11 @@ Global flags:
     --no-cache          Bypass response cache for this request
     --verbose           Show token estimates and pipeline details
     --json              Output in JSON format
-    --model NAME        Override model (haiku|sonnet|opus or full ID)
+    --model NAME        Override model (haiku|sonnet|opus|fable or full ID)
+    --effort LEVEL      Thinking effort: low|medium|high|xhigh|max
+    --max-budget-usd N  Hard spend ceiling for this call (e.g. 0.50)
+    --strict-spec       Refuse an under-specified request instead of warning
+    --no-spec-check     Skip the pre-flight specification check
     --session-id UUID   Start a session with a fixed ID (reusable via --resume)
     --resume UUID       Resume an existing Claude session (warm prompt cache)
     --feedback          Let Claude request missing context (auto-retry once)
@@ -67,7 +71,7 @@ Argument order is enforced:
 
 
 # Flags that take a value (the next argv is the value, not a positional arg).
-_VALUE_FLAGS = {"--model", "--session-id", "--resume"}
+_VALUE_FLAGS = {"--model", "--session-id", "--resume", "--effort", "--max-budget-usd"}
 
 
 def _pop_global_flags(argv: list[str]) -> tuple[list[str], dict]:
@@ -83,6 +87,10 @@ def _pop_global_flags(argv: list[str]) -> tuple[list[str], dict]:
         "resume": None,
         "feedback": False,
         "agentic": False,
+        "effort": None,
+        "max_budget_usd": None,
+        "strict_spec": False,
+        "no_spec_check": False,
     }
     remaining: list[str] = []
 
@@ -104,6 +112,10 @@ def _pop_global_flags(argv: list[str]) -> tuple[list[str], dict]:
             flags["feedback"] = True
         elif arg == "--agentic":
             flags["agentic"] = True
+        elif arg == "--strict-spec":
+            flags["strict_spec"] = True
+        elif arg == "--no-spec-check":
+            flags["no_spec_check"] = True
         elif arg in _VALUE_FLAGS:
             if i + 1 >= len(argv):
                 print(f"[claudio:error] {arg} requires a value", file=sys.stderr)
@@ -115,6 +127,10 @@ def _pop_global_flags(argv: list[str]) -> tuple[list[str], dict]:
                 flags["session_id"] = value
             elif arg == "--resume":
                 flags["resume"] = value
+            elif arg == "--effort":
+                flags["effort"] = value
+            elif arg == "--max-budget-usd":
+                flags["max_budget_usd"] = value
             i += 2
             continue
         else:

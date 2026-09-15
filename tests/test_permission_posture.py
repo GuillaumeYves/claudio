@@ -33,7 +33,7 @@ def test_posture_mapping():
     assert config.posture_permission_mode("autonomous") == "bypassPermissions"
     assert config.posture_permission_mode("edits") == "acceptEdits"
     assert config.posture_permission_mode("confirm") == "acceptEdits"
-    assert config.posture_permission_mode("preview") is None
+    assert config.posture_permission_mode("preview") == "plan"
 
 
 def test_unknown_posture_maps_to_default():
@@ -80,7 +80,7 @@ def test_build_mode_from_posture(isolated_config):
     config.save_config({"permission_posture": "autonomous"})
     assert build._build_permission_mode({"dry_run": False}) == "bypassPermissions"
     config.save_config({"permission_posture": "preview"})
-    assert build._build_permission_mode({"dry_run": False}) is None
+    assert build._build_permission_mode({"dry_run": False}) == "plan"
 
 
 def test_build_dry_run_never_mutates(isolated_config):

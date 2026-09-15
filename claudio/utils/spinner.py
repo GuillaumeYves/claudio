@@ -8,7 +8,6 @@ import time
 
 from claudio.utils.colors import CYAN, DIM, RESET, colors_enabled
 
-
 # Braille frames look smoother than the rotating slash and stay aligned
 # in monospaced terminals. Two-character ASCII fallback for legacy consoles.
 _FRAMES_UNICODE = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
@@ -38,7 +37,7 @@ class Spinner:
         # reads it clearly as "claudio is doing something, not frozen".
         self._frame_mode = "default"
 
-    def __enter__(self) -> "Spinner":
+    def __enter__(self) -> Spinner:
         self.start()
         return self
 

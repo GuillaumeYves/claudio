@@ -5,6 +5,7 @@ behaves identically to the installed `claudio` script.
 """
 
 import sys
+
 from claudio.repl import main
 
 sys.exit(main())
